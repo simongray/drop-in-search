@@ -1,0 +1,9 @@
+{
+  "name": "drop-in-search",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Node test tools for drop-in-search. The library itself has no npm dependencies.",
+  "devDependencies": {
+    "shadow-cljs": "^3.5.3"
+  }
+}

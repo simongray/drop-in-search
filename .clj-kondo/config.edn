@@ -1,0 +1,5 @@
+{:linters       {:missing-docstring {:level :warning}
+                 :unused-binding    {:exclude-destructured-as true}}
+ ;; test fixtures need no docstrings
+ :ns-groups     [{:pattern "dk\\.simongray\\.drop-in-search.*-test" :name tests}]
+ :config-in-ns  {tests {:linters {:missing-docstring {:level :off}}}}}

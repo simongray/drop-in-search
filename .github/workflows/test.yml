@@ -1,0 +1,80 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: Java 25, Node 24
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: DeLaGuardo/setup-clojure@13.7.0
+        with:
+          cli: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: clojure-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+
+      - name: JVM tests
+        run: clojure -X:test
+
+      # The build runs the tests itself, but exits 0 when one fails, so
+      # node runs the built file, and its exit code fails the step.
+      - name: Node tests
+        run: |
+          npm ci
+          clojure -M:cljs compile test --config-merge '{:autorun false}'
+          node target/node-tests.js
+
+      - name: Node tests, compiled with advanced optimizations
+        run: |
+          clojure -M:cljs release test --config-merge '{:autorun false}'
+          node target/node-tests.js
+
+      - name: Lint
+        run: clojure -Sdeps '{:deps {clj-kondo/clj-kondo {:mvn/version "2026.08.04"}}}' -M -m clj-kondo.main --lint src test
+
+  floor:
+    name: Java 11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - uses: DeLaGuardo/setup-clojure@13.7.0
+        with:
+          cli: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            .cpcache
+          key: clojure-floor-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+
+      - name: JVM tests
+        run: clojure -X:test
