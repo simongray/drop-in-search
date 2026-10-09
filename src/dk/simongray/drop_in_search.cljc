@@ -1085,7 +1085,8 @@
   - :max-completions and :max-expansions, the most terms that a prefix
     and a word with typos stand for
 
-  Equal scores come in the order of their ids, so the order is stable.
+  Equal scores are ordered by id, numbers ascending and other ids by
+  hash, so the order is stable on both platforms.
   When words matched others with typos, the results have :typos in their
   metadata, a map of each such word to those it matched, the closest
   first, and so does each result that holds a word only with typos:

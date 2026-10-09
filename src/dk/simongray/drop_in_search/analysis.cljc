@@ -3,9 +3,9 @@
   terms of a text by position.
 
   A word is a run of letters, marks and digits, and anything else splits
-  words, e.g. \"Simon's\" is the words simon and s. A run in a script
-  without spaces between words, such as Chinese, Japanese, Korean or Thai,
-  has its pairs of characters, bigrams, as terms.
+  words, e.g. \"Simon's\" is the words simon and s. A run in Korean, or in
+  a script without spaces between words, such as Chinese, Japanese or
+  Thai, has its pairs of characters, bigrams, as terms.
 
   The comments name the source of each part, and where it departs from it:
 
@@ -114,9 +114,9 @@
 ;; WB999 breaks around each ideograph. Katakana counts with its sound and
 ;; repeat marks, as WB13 has it
 (def ^:no-doc unspaced-letters
-  "The class of the letters of the scripts without spaces between words,
-  for a pattern: Han, Hiragana, Katakana, Hangul, Bopomofo, Thai, Lao,
-  Khmer and Myanmar."
+  "The class of the letters of Korean and of the scripts without spaces
+  between words, for a pattern: Han, Hiragana, Katakana, Hangul, Bopomofo,
+  Thai, Lao, Khmer and Myanmar."
   (str "\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\p{sc=Hangul}"
        "\\p{sc=Bopomofo}\\p{sc=Thai}\\p{sc=Lao}\\p{sc=Khmer}"
        "\\p{sc=Myanmar}\\u3031-\\u3035\\u3099-\\u309C\\u30FC\\uFF70"
@@ -139,8 +139,8 @@
   #"(?u)[^\p{M}\uFF9E\uFF9F][\p{M}\uFF9E\uFF9F]*")
 
 (defn unspaced?
-  "Whether `s` starts with a letter of a script without spaces between
-  words, such as Chinese, Japanese, Korean or Thai."
+  "Whether `s` starts with a letter of Korean or of a script without
+  spaces between words, such as Chinese, Japanese or Thai."
   [s]
   (boolean (re-find unspaced-start (str s))))
 

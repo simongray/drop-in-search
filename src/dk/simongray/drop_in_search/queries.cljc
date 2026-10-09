@@ -371,10 +371,11 @@
   "The query `q`, a string, as data, read with the `opts` below, or nil
   when it asks for nothing.
 
-  Words must all occur, and the last is a prefix to complete unless `q`
-  ends in a space or a quote. The operators are AND, OR and NOT, or & |
-  ! and - before a word, with parentheses, \"a phrase\", a prefix*, a word
-  with typos~ and field:word or field=word for a word in one field:
+  Words must all occur, and the last word is a prefix to complete when
+  nothing follows it, not even a space, unless it's in quotes. The
+  operators are AND or &, OR or |, and NOT, or ! or - before a word, with
+  parentheses, \"a phrase\", a prefix*, a word with typos~ and field:word
+  or field=word for a word in one field:
 
       (parse \"title:clojure -rust\" {:aliases {\"title\" :title}})
       ;; => {:and [{:term \"clojure\" :field :title}
@@ -383,7 +384,8 @@
   A query as data is a map of :and or :or with a vector of queries, of
   :not with a query, of :term with a term, or of :phrase with a vector
   of terms in a row. A term or phrase has :prefix? when its last term is
-  a prefix, and :field when it's in that field only.
+  a prefix, and :field when it's in that field only. A term has :fuzzy,
+  :auto or a number of edits, when it allows typos.
 
   The `opts` are:
 

@@ -10,8 +10,9 @@
   "The block of positions that each field of a document gets.
 
   Each position of a term in a document is offset by its field's number
-  times this. Two positions one apart are then always in the same field.
-  A longer field is indexed up to this length."
+  times this. Two positions one apart are then in the same field, except
+  at the end of a field this long. A longer field is indexed up to this
+  length."
   1000000)
 
 (defn ^:no-doc make-ints
@@ -296,7 +297,7 @@
 
 (defn ^:no-doc numbered
   "The `numbers` of the fields of an index, a map of field to number, with
-  a number for each new field of `analyzed`, in order of appearance."
+  a number for each new field of `analyzed`."
   [numbers analyzed]
   (reduce (fn [numbers field]
             (cond
