@@ -1,14 +1,7 @@
 (ns dk.simongray.drop-in-search.segment
-  "The segments of an index of dk.simongray.drop-in-search, on both
-  platforms: the postings of some of its documents in sorted arrays of
-  ints, as a segment of Lucene's index holds them.
-
-  A segment is built from analyzed documents, and segments are combined
-  into one, which leaves out the documents that are removed. A segment is
-  a value, which prints as EDN and is read back with segment-of. The index
-  decides when to build and combine them, and its CIFF codec writes them
-  to a store. Lucene's segments are described at
-  https://lucene.apache.org/core/9_11_1/core/"
+  "The segments of an index, on both platforms: the postings of some of
+  its documents in sorted arrays of ints, as a segment of Lucene's index
+  holds them, https://lucene.apache.org/core/9_11_1/core/"
   (:require [dk.simongray.drop-in-search.analysis :as analysis])
   #?(:clj (:import [java.io Writer]
                    [java.util Arrays])))
@@ -246,9 +239,9 @@
     (str "segment-" (hex (lane false)) (hex (lane true)) ".ciff")))
 
 (defn ^:no-doc segment-of
-  "The segment of `m`, a map of its fields, whose arrays can be vectors, as
-  segment-data gives them. Without a :name, its name is a hash of what it
-  holds, worked out once it's needed."
+  "The segment of `m`, a map of its fields, whose arrays can be vectors.
+  Without a :name, its name is a hash of what it holds, worked out once
+  it's needed."
   [{:keys [ids stored terms doc-start docs pos-start positions lengths
            field-stats deleted name]
     :as   m}]
@@ -355,7 +348,7 @@
 
 (defn ^:no-doc analyzed-fields
   "The terms by position of each of the `fields` of a document that has
-  any, as analyze gives them."
+  any."
   [fields]
   (into {}
         (keep (fn [[field v]]
@@ -376,7 +369,7 @@
   "The postings of the analyzed documents `entries`, numbered in order,
   whose fields have the `numbers` of an index: a map of each term to a
   vector of the numbers of its documents, each followed by its positions
-  there, as positions gives them."
+  there."
   [numbers entries]
   (let [postings (reduce-kv (fn [acc no {:keys [fields]}]
                               (reduce-kv #(posted %1 no %2 %3)
@@ -431,8 +424,8 @@
 ;; nothing, as discountOverlaps does in Lucene's BM25Similarity
 (defn ^:no-doc built
   "A segment of the analyzed documents `entries`, maps of :id, :stored and
-  :fields as analyzed-fields gives them, whose fields have the `numbers`
-  of an index."
+  :fields of terms by position, whose fields have the `numbers` of an
+  index."
   [numbers entries]
   (let [postings      (postings-of numbers entries)
         terms         (to-array (sort (keys postings)))
@@ -485,8 +478,8 @@
 
 (defn- renumbered
   "For each of the `segments`, an array of the number of each of its
-  documents in one segment of them all in order, as numbers-from gives
-  them."
+  documents in one segment of them all in order, or -1 for one that is
+  removed."
   [segments]
   (mapv numbers-from segments (reductions + 0 (map live segments))))
 

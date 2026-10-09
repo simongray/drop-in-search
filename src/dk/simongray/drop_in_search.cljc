@@ -4,30 +4,10 @@
 
   A document is a map of its :id, its :fields, and what a result gives
   back, under :stored. A field holds text, or anything whose text counts,
-  such as a number or a set of keywords. To search the records of an app,
-  make a document of each:
+  such as a number or a set of keywords, but a vector holds terms to take
+  as they are.
 
-      (defn document
-        \"The search document of the blog post `post`.\"
-        [post]
-        {:id     (:slug post)
-         :fields (select-keys post [:title :body :tags])
-         :stored (select-keys post [:title])})
-
-      (def idx (index (map document posts) {:boosts {:title 3}}))
-      (query idx \"title:clojure -rust\" {:limit 10})
-      ;; => [{:id \"clojure-data\" :score 0.51 :stored {:title \"…\"}}]
-
-  The index is a value: add and remove give a changed one, e.g. (add idx
-  (document post)) when a post changes, and it prints as EDN, which
-  restore reads back. It keeps the documents in the segments of
-  search.segment, and to keep a large index in a store, use search.ciff.
-  A query is a string in the language of search.queries, or the same query
-  as data. To show where a text matches it, give search.queries/snippet the
-  options of query-opts.
-
-  Text is analyzed by search.analysis. The comments name the source of
-  each part, and where it departs from it:
+  The comments name the source of each part, and where it departs from it:
 
   - Robertson and Zaragoza, The Probabilistic Relevance Framework: BM25
     and Beyond, Foundations and Trends in Information Retrieval 3(4),
@@ -151,7 +131,8 @@
 ;; A segment is built of at most 4096 documents at once, so that building
 ;; it takes little memory, and merges join the segments
 (defn- added
-  "The `index` with the documents `docs`, as add gives it."
+  "The `index` with the documents `docs`, which replace any of the same
+  ids."
   [index docs]
   (when-let [doc (some #(when (nil? (:id %)) %) docs)]
     (throw (ex-info "A document needs an :id" {:document doc})))
@@ -172,14 +153,9 @@
             (partition-all 4096 docs))))
 
 (defn index
-  "An index of `docs` with the `opts` below, or an empty one to add to.
-
-  The `opts` are the defaults of query on this index, e.g. the :boosts of
-  its fields and the :aliases that a query can name them by, and of
-  query-opts. They print with the index, so they're data.
-
-  The index prints as EDN, its arrays as vectors, and restore reads it
-  back."
+  "An index of the documents `docs`, or an empty one, with `opts` as the
+  defaults of its queries, e.g. the :boosts of its fields. The `opts`
+  print with the index, so they must be data."
   ([]
    {:segments [] :docs {} :fields {}})
   ([docs]
@@ -219,15 +195,16 @@
   [index]
   (keys (:docs index)))
 
+;; Xapian takes the 100 most frequent completions of a prefix, and Lucene's
+;; FuzzyQuery the 50 closest terms to a word with typos
 (def default-limits
-  "The limits of query that its options don't set, which keep the cost of
-  a query that anyone can type within bounds, over those of
-  search.queries/default-limits:
+  "The limits that keep the cost of a query that anyone can type within
+  bounds, when its options don't set them:
 
   - :max-completions, the terms that a prefix stands for, those of the
-    most documents, as Xapian takes the 100 most frequent
+    most documents, as in Xapian
   - :max-expansions, the terms that a word with typos stands for, the
-    closest, as Lucene's FuzzyQuery takes 50"
+    closest, as in Lucene's FuzzyQuery"
   {:max-completions 100
    :max-expansions  50})
 
@@ -313,14 +290,13 @@
 
 (defn- frequency
   "BM25F's frequency of a term in the document `d` of `segment`, whose
-  posting of it is the `k`th, with the `weights` of the fields.
-
-  The positions of a field come together, so what an occurrence counts
-  is worked out once for each run of them."
+  posting of it is the `k`th, with the `weights` of the fields."
   ^double [^Segment segment weights ^long d ^long k]
   (let [^ints pos-start (.-pos-start segment)
         ^ints positions (.-positions segment)
         to              (aget pos-start (inc k))]
+    ;; the positions of a field come together, so what an occurrence
+    ;; counts is worked out once for each run of them
     (loop [i (long (aget pos-start k)) sum 0.0 field -1 counts 0.0]
       (if (< i to)
         (let [no     (quot (aget positions i) segment/span)
@@ -898,9 +874,11 @@
     :term   (term-hits ctx segment node candidates)
     (no-hits)))
 
+;; Ids that aren't both numbers compare by hash and then as strings, so
+;; that the order is total and the same on both platforms, which hash
+;; numbers differently. BM25 ties are common, so this must stay cheap
 (defn- compare-ids
-  "The order of the ids `x` and `y` of two results of the same score, as
-  better gives it."
+  "The order of the ids `x` and `y` of two results of the same score."
   [x y]
   (if (and (number? x) (number? y))
     (compare x y)
@@ -913,11 +891,7 @@
 
 (defn- better
   "A comparator of the found documents `a` and `b`, vectors of an id and a
-  score, and what is stored: the higher score first, then the lower id.
-
-  Ids that aren't both numbers compare by hash and then as strings, so
-  that the order is total and the same on both platforms, which hash
-  numbers differently. BM25 ties are common, so this must stay cheap."
+  score, and what is stored: the higher score first, then by id."
   [a b]
   (let [sa (double (nth a 1))
         sb (double (nth b 1))]
@@ -946,11 +920,7 @@
 
 (defn- best
   "The `results` sorted by the comparator `cmp`, at most `n` of them if
-  `n` is given.
-
-  For a small `n`, the best so far are kept in a small sorted vector, so
-  that most candidates cost one comparison with its worst. For an `n`
-  beyond the square root of the number of results, all are sorted."
+  `n` is given."
   [cmp n results]
   (cond
     (and n (<= n 0))
@@ -960,6 +930,8 @@
     (let [sorted (sort cmp results)]
       (vec (if n (take n sorted) sorted)))
 
+    ;; the best so far are kept in a small sorted vector, so that most
+    ;; candidates cost one comparison with its worst
     :else
     (reduce #(kept cmp n %1 %2) [] results)))
 
@@ -1049,9 +1021,9 @@
            (term-ranges segment [term])))))
 
 (defn- with-typos
-  "The `result` of a query of `index` with :typos, a map of each of the
-  terms of `typos`, as typos-of gives them, that its document holds only
-  with typos, to the near terms that it holds, when there are any."
+  "The `result` of a query of `index` with :typos, a map of each term of
+  `typos` that its document holds only with typos to the near terms that
+  it holds, when there are any."
   [index typos {:keys [id] :as result}]
   (let [[i d]   (get (:docs index) id)
         segment (nth (:segments index) i)
@@ -1073,11 +1045,9 @@
     (str field)))
 
 (defn query-opts
-  "The `opts` over the defaults of `index` for the functions of
-  search.queries, so that they read a query as query does.
-
-  Besides the defaults, they hold the names of the fields among the
-  :aliases, and :known-fn, which tells the terms that the documents hold."
+  "The `opts` over the defaults of `index`, to read a query as the index
+  does: with the names of its fields among the :aliases, and a :known-fn
+  that tells the terms its documents hold."
   ([index]
    (query-opts index {}))
   ([index opts]
@@ -1093,37 +1063,31 @@
   "The documents of `index` that match the query `q`, best first, as maps
   of :id, :score and :stored, with the `opts` below.
 
-  The query is a string that search.queries/parse reads, the same query
-  as data, or a vector of terms taken as they are. The `opts` are those
-  of parse, and these, over the defaults of the index:
+  The query is a string, the same query as data, or a vector of terms
+  taken as they are. The `opts` are those of search.queries/parse, and
+  these, over the defaults of the index:
 
-  - :limit, the most results
-  - :offset, the results to skip first, e.g. for the next page
+  - :limit, the most results, and :offset, how many to skip first
   - :fuzzy, which words match words with typos too: by default those that
     no document holds, true for all, a number for all with at most that
-    many edits, and false for none but those marked with ~ in the query
+    many edits, up to 2, and false for none but those marked with ~
   - :typo-lengths, the shortest words with one edit and with two, [3 6]
-    by default, as the AUTO:3,6 of Elasticsearch
+    by default, as Elasticsearch's AUTO
   - :boosts, the weight of a match in each field, 1 by default, where 0
     leaves a field out unless the query names it
   - :fields, the set of fields to search, all by default, which gives the
     other fields the weight 0
-  - :aliases, other names that a query can give the fields, as a map of a
-    name to a field
   - :k1 and :b, the saturation and length normalization of BM25F
   - :filter-fn, a predicate of a result to keep it
   - :rank-fn, a function of a result to order by, ascending, instead of
     the score
-  - :max-completions and :max-expansions, the limits of default-limits
+  - :max-completions and :max-expansions, the most terms that a prefix
+    and a word with typos stand for
 
   Equal scores come in the order of their ids, so the order is stable.
-
-  A word with typos has as many edits as the number of :fuzzy, at most
-  2, or else as many as its length allows by the :typo-lengths. A match
-  with typos weighs less than an exact one. When words matched
-  others with typos, the results have :typos in their metadata, a map of
-  each such word to those it matched, the closest first. A result that
-  holds a word only with typos has :typos too, e.g. for a UI to say so:
+  When words matched others with typos, the results have :typos in their
+  metadata, a map of each such word to those it matched, the closest
+  first, and so does each result that holds a word only with typos:
 
       (meta (query idx \"intervew\"))
       ;; => {:typos {\"intervew\" [\"interview\" \"interviews\"]}}"

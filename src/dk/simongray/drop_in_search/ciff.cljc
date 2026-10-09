@@ -1,12 +1,7 @@
 (ns dk.simongray.drop-in-search.ciff
-  "An index of dk.simongray.drop-in-search kept as documents in a store: a
-  manifest in EDN, and a document for each segment in the Common Index
-  File Format, CIFF, which other search engines can read.
-
-  The plan function gives the documents to put and the names to delete,
-  and read-documents reads them back. Neither touches a store, so the
-  documents can go wherever an app keeps things, e.g. a folder or
-  IndexedDB.
+  "An index kept as documents in a store: a manifest in EDN, and a
+  document for each segment in the Common Index File Format, CIFF, which
+  other search engines can read.
 
   CIFF is that of https://github.com/osirrc/ciff, its README and its
   CommonIndexFileFormat.proto of 2020-03. What CIFF lacks has fields of
@@ -128,8 +123,8 @@
        body)))
 
 (defn- put-field!
-  "Put the field `fld`, as field-size takes it, into the bytes `bs` at `at`,
-  and give where the next one goes."
+  "Put the field `fld`, a vector of its number, kind and value, into the
+  bytes `bs` at `at`, and give where the next one goes."
   ^long [bs ^long at fld]
   (let [[field kind v] fld]
     (case kind
@@ -239,8 +234,8 @@
 
 (defn- put-list!
   "Put the PostingsList of the term `t` of `segment` into the bytes `bs` at
-  `at`, with its UTF-8 `term-bytes` and its `sizes` as list-sizes gives
-  them, and give where the next one goes."
+  `at`, with its UTF-8 `term-bytes` and the `sizes` of its body and its
+  packed positions, and give where the next one goes."
   [bs at ^Segment segment term-bytes [body packed] t]
   (let [^ints doc-start (.-doc-start segment)
         ^ints docs      (.-docs segment)
@@ -323,16 +318,16 @@
   `names`, and the names to delete from it, so that it holds `index`.
 
   It's a map of :put, documents as maps of :name and :body to put in this
-  order, and :delete, the names of the documents of segments that `index`
-  no longer has. Without `names`, it's every document. The store needs
-  a place of its own, e.g. a folder, since plan deletes the documents of
-  any index there but this one.
+  order, and :delete, the names of the segments that `index` no longer
+  has. Without `names`, it's every document. The store needs a place of
+  its own, e.g. a folder, since the segments of any other index there are
+  deleted.
 
-  The manifest index.edn lists the segments, and its :body is EDN. Each
-  segment is a document in CIFF, named after what it holds, so it's put
-  once. Its :body is bytes: a byte array on the JVM and a Uint8Array in
-  JavaScript. Put them all before you delete, and the manifest last, so
-  that a store that a crash stops in between still holds an index:
+  The :body of the manifest is EDN, and that of a segment is CIFF, as a
+  byte array on the JVM and a Uint8Array in JavaScript. A segment is
+  named after what it holds, so it's put once. Put the documents before
+  you delete, so that a store that a crash stops in between still holds
+  an index:
 
       (let [{:keys [put delete]} (plan idx (map :name (list-documents)))]
         (doseq [{:keys [name body]} put]
@@ -749,9 +744,8 @@
       manifest)))
 
 (defn read-documents
-  "The index in the documents `fetched`, maps of :name and :body as plan
-  puts them, the manifest index.edn and the segments that it lists. The
-  manifest can be text or its UTF-8 bytes.
+  "The index in the documents `fetched`, maps of :name and :body: the
+  manifest index.edn, as text or UTF-8 bytes, and the segments it lists.
 
   It throws ::malformed when a document is missing or doesn't read, e.g.
   for an app to build the index again, and ::newer-format for documents

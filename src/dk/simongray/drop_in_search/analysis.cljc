@@ -5,8 +5,7 @@
   A word is a run of letters, marks and digits, and anything else splits
   words, e.g. \"Simon's\" is the words simon and s. A run in a script
   without spaces between words, such as Chinese, Japanese, Korean or Thai,
-  has its pairs of characters as terms, the bigrams that search engines
-  use where no dictionary is at hand.
+  has its pairs of characters, bigrams, as terms.
 
   The comments name the source of each part, and where it departs from it:
 
@@ -27,16 +26,16 @@
 ;; The stroke letters of UTR #30 and Lucene's ASCIIFoldingFilter, and ß
 ;; and final sigma of CaseFolding.txt
 (def ^:no-doc spellings
-  "The letters that decomposition leaves whole, and how fold spells them
-  out."
+  "The letters that decomposition leaves whole, and how folding spells
+  them out."
   {\æ "ae" \ø "o" \œ "oe" \ß "ss" \ð "d" \þ "th"
    \ł "l" \đ "d" \ħ "h" \ı "i" \ŋ "n" \ŧ "t" \ς "σ"})
 
 ;; Unicode, Blocks.txt: the five blocks of combining diacritical marks, the
 ;; variation selectors, the soft hyphen and the zero-width joiners
 (def ^:no-doc marks
-  "A pattern of what fold strips after decomposition: the diacritics, and
-  the invisible characters that only change how a word looks."
+  "A pattern of what folding strips after decomposition: the diacritics,
+  and the invisible characters that only change how a word looks."
   #"[\u00AD\u0300-\u036F\u1AB0-\u1AFF\u1DC0-\u1DFF\u200C\u200D\u2060\u20D0-\u20FF\uFE00-\uFE0F\uFE20-\uFE2F]")
 
 (defn- highest
@@ -49,11 +48,10 @@
         (let [c #?(:clj (int (.charAt s i)) :cljs (.charCodeAt s i))]
           (recur (inc i) (if (< top c) (long c) top)))))))
 
+;; A loop is far faster than the pattern on text without marks, and each
+;; comparison takes two arguments so that Clojure compiles it inline
 (defn- marked?
-  "Whether `s` has a character that marks matches.
-
-  A loop is far faster than the pattern on text without marks, and each
-  comparison takes two arguments so that Clojure compiles it inline."
+  "Whether `s` has a character that marks matches."
   [^String s]
   (let [n (count s)]
     (loop [i 0]
@@ -109,7 +107,7 @@
 
 (def ^:no-doc word
   "The pattern of a word: a run of letters, marks and digits, with the
-  invisible characters that fold strips."
+  invisible characters that folding strips."
   #"(?u)[\p{L}\p{M}\p{N}\u00AD\u200C\u200D\u2060]+")
 
 ;; UAX #29, section 4: these scripts need a dictionary to find words, and
@@ -298,11 +296,12 @@
                   w))
 
 (defn- reduce-parts
-  "Reduce the parts of the word `w` with `f`, from `init`, as the pattern
-  parts finds them. The `f` takes the accumulator, the part and where it
-  starts in `w`. A word below U+0E00 is one part, which spares it the
-  pattern."
+  "Reduce the parts of the word `w` with `f`, from `init`: its runs in a
+  script without spaces, and its runs of anything else. The `f` takes the
+  accumulator, the part and where it starts in `w`."
   [f init w]
+  ;; a word below U+0E00, where Thai starts, is one part, which spares it
+  ;; the pattern
   (if (< (highest w) 0x0E00)
     (f init w 0)
     (reduce-matches f init parts w)))
@@ -366,11 +365,9 @@
 
 (defn spans
   "The terms of `s` with where each is in `s`, for highlighting, as maps
-  of :term, :start, :end and :position.
-
-  The terms are those of tokens, and the terms at one position have the
-  same :position, e.g. the last pair of characters in a run of Chinese and
-  its last character."
+  of :term, :start, :end and :position. The terms at one position have
+  the same :position, e.g. the last pair of characters in a run of
+  Chinese and its last character."
   [s]
   (let [add-group (fn [[acc position] group]
                     [(reduce #(conj! %1 (assoc %2 :position position))

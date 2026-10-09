@@ -2,16 +2,7 @@
   "The query language of full-text search, and a query matched against one
   text without an index, on both platforms.
 
-  Parse reads a query as data, which dk.simongray.drop-in-search/query
-  takes too. Snippet and matches? read a query the same way. To read it as
-  a query of an index does, with the names of its fields and the words it
-  holds, give them the options of dk.simongray.drop-in-search/query-opts:
-
-      (snippet \"A little Clojure\" \"clojre \" (search/query-opts idx))
-      ;; => [{:text \"A little \"} {:text \"Clojure\" :match? true}]
-
-  Text is analyzed by search.analysis. The comments name the source of
-  each part, and where it departs from it:
+  The comments name the source of each part, and where it departs from it:
 
   - Lucene's simple query parser and FuzzyQuery,
     https://lucene.apache.org/core/9_11_1/core/
@@ -26,7 +17,7 @@
 ;; which Elasticsearch's simple_query_string shares, with & and ! for AND
 ;; and NOT as in many programming languages
 (def syntax
-  "The spellings of the operators of the query language that parse reads.
+  "The spellings of the operators of the query language.
 
   A spelling of letters, e.g. AND, is an operator only as a word of its
   own, and a sign, e.g. &, inside a word too. A sign of :not counts only
@@ -41,8 +32,8 @@
    :fuzzy  #{"~"}})
 
 (def default-limits
-  "The limits of parse that its options don't set, which keep the cost of
-  a query that anyone can type within bounds:
+  "The limits that keep the cost of a query that anyone can type within
+  bounds, when its options don't set them:
 
   - :max-terms, the words and phrases of a query that count, the first
   - :max-depth, the groups in groups of a query, where a deeper one is
@@ -381,10 +372,9 @@
   when it asks for nothing.
 
   Words must all occur, and the last is a prefix to complete unless `q`
-  ends in a space or a quote. The operators are those of syntax: AND, OR
-  and NOT, or & | ! and - before a word, with parentheses, \"a phrase\",
-  a prefix*, a word with typos~ and field:word or field=word for a word
-  in one field:
+  ends in a space or a quote. The operators are AND, OR and NOT, or & |
+  ! and - before a word, with parentheses, \"a phrase\", a prefix*, a word
+  with typos~ and field:word or field=word for a word in one field:
 
       (parse \"title:clojure -rust\" {:aliases {\"title\" :title}})
       ;; => {:and [{:term \"clojure\" :field :title}
@@ -399,13 +389,14 @@
 
   - :aliases, the names that a query can give fields, as a map of a name
     to a field
-  - :syntax, the spellings of operators over those of syntax, e.g. OG
-    for AND in Danish with {:and #{\"OG\" \"&\"}}
+  - :syntax, the spellings of operators over the defaults, e.g. OG for
+    AND in Danish with {:and #{\"OG\" \"&\"}}
   - :operator, :and or :or between words without one, :and by default
   - :prefix?, false to take the last word whole
   - :min-prefix, the fewest characters of a last word to complete, 1 by
     default
-  - :max-terms and :max-depth, the limits of default-limits
+  - :max-terms, the most words and phrases that count, and :max-depth,
+    the deepest that groups nest
 
   Nothing is an error, and a sign or a parenthesis that makes no sense
   counts for nothing."
@@ -518,7 +509,7 @@
   "The term `leaf` with the edits that it allows as its :fuzzy: those of
   its own, or of `fuzzy` when that's true or a number, or else when
   `fuzzy` is nil and `known-fn` doesn't know it. Its length decides the
-  edits of true and :auto by the `lengths` of auto-edits."
+  edits of true and :auto, by the `lengths`."
   [{:keys [term] :as leaf} fuzzy known-fn lengths]
   (let [wanted (cond
                  (:fuzzy leaf)    (:fuzzy leaf)
@@ -533,9 +524,8 @@
                              wanted)))))
 
 (defn- with-fuzzy
-  "The query `node` with the edits that each of its terms allows, as
-  with-edits gives them with `fuzzy`, `known-fn` and `lengths`, but none
-  for a script without spaces."
+  "The query `node` with the edits that each of its terms allows by
+  `fuzzy`, `known-fn` and `lengths`, but none in a script without spaces."
   [node fuzzy known-fn lengths]
   (map-leaves #(if (and (:term %) (not (analysis/unspaced? (:term %))))
                  (with-edits % fuzzy known-fn lengths)
@@ -552,9 +542,8 @@
     :else       q))
 
 (defn ^:no-doc fuzzy-query
-  "The query `q` as as-query reads it with the `opts` of snippet, with the
-  edits that each of its terms allows by their :fuzzy, :typo-lengths and
-  :known-fn."
+  "The query `q` as data, read with `opts`, with the edits that each of
+  its terms allows by their :fuzzy, :typo-lengths and :known-fn."
   [q {:keys [fuzzy typo-lengths known-fn] :as opts}]
   (some-> (as-query q opts)
           (with-fuzzy fuzzy known-fn typo-lengths)))
@@ -646,7 +635,7 @@
       lo)))
 
 (def ^:no-doc most-windows
-  "The most windows that snippet weighs, those at the first matches."
+  "The most windows that a snippet weighs, those at the first matches."
   100)
 
 ;; SQLite FTS5's snippet function: the window that holds the most of the
@@ -689,23 +678,21 @@
 
 (defn snippet
   "A window of `text` around the words that match the query `q`, as parts
-  for a result list to render, with the `opts` below.
+  to render, with the `opts` below.
 
   It's a vector of maps of :text, with :match? on the matches, and an
   ellipsis where the window cuts the text. The text is plain, so escape
-  it to put it into HTML. Of the windows at the start and at each match,
-  the one with the most of the query's words and phrases wins, the first
-  of them on a tie. The query is a string that parse reads, the same
-  query as data, or a vector of terms taken as they are. The `opts` are
-  those of parse, and these:
+  it to put it into HTML. The window holds the most of the query's words
+  and phrases, as in SQLite FTS5. The query is a string, the same query
+  as data, or a vector of terms taken as they are. The `opts` are those
+  of parse, and these:
 
   - :width, the number of characters shown, 160 by default
   - :fuzzy, which words match words with typos too: by default those that
     :known-fn doesn't know, true for all, a number for all with at most
-    that many edits, and false for none but those marked with ~ in the
-    query
+    that many edits, up to 2, and false for none but those marked with ~
   - :typo-lengths, the shortest words with one edit and with two, [3 6]
-    by default, as the AUTO:3,6 of Elasticsearch
+    by default, as Elasticsearch's AUTO
   - :known-fn, a predicate of a term of a query, e.g. {:term \"clojure\"},
     that tells whether the documents of an index hold it; without it, no
     word is unknown"
