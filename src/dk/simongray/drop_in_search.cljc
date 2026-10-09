@@ -938,14 +938,14 @@
 
 (defn- top
   "The best `n` of the `found` documents, or all of them for a nil `n`, as
-  the results that `result-fn` makes of each, with the :filter-fn and
+  the results that `result-fn` makes of each, with the :filter-pred and
   :rank-fn of `opts`."
-  [found result-fn n {:keys [filter-fn rank-fn] :as opts}]
+  [found result-fn n {:keys [filter-pred rank-fn] :as opts}]
   (cond
     rank-fn
     (->> found
          (map result-fn)
-         (filter (or filter-fn any?))
+         (filter (or filter-pred any?))
          (map (fn [r] [(rank-fn r) r]))
          (sort-by first)
          (map second)
@@ -954,11 +954,11 @@
 
     ;; a filter that costs, e.g. criteria of a library, reads the best
     ;; first, and more of them only when too few are kept
-    (and filter-fn n)
+    (and filter-pred n)
     (loop [m (* 2 (max 1 (long n))) read 0 kept []]
       (let [best-m (best better m found)
             kept   (into kept
-                         (comp (filter #(filter-fn (result-fn %)))
+                         (comp (filter #(filter-pred (result-fn %)))
                                (take (- (long n) (count kept))))
                          (subvec best-m read))]
         (if (or (= (count kept) n)
@@ -967,8 +967,8 @@
           (recur (* 4 m) (count best-m) kept))))
 
     :else
-    (->> (if filter-fn
-           (filter #(filter-fn (result-fn %)) found)
+    (->> (if filter-pred
+           (filter #(filter-pred (result-fn %)) found)
            found)
          (best better n)
          (mapv result-fn))))
@@ -1047,8 +1047,8 @@
 
 (defn query-opts
   "The `opts` over the defaults of `index`, to read a query as the index
-  does: with the names of its fields among the :aliases, and a :known-fn
-  that tells the terms its documents hold."
+  does: with the names of its fields among the :aliases, and a
+  :known-pred that tells the terms its documents hold."
   ([index]
    (query-opts index {}))
   ([index opts]
@@ -1057,8 +1057,8 @@
          names (into {} (for [field (keys fields)]
                           [(name-of field) field]))]
      (assoc opts
-            :aliases  (merge names (:aliases opts))
-            :known-fn #(known? segments %)))))
+            :aliases    (merge names (:aliases opts))
+            :known-pred #(known? segments %)))))
 
 (defn query
   "The documents of `index` that match the query `q`, best first, as maps
@@ -1079,7 +1079,7 @@
   - :fields, the set of fields to search, all by default, which gives the
     other fields the weight 0
   - :k1 and :b, the saturation and length normalization of BM25F
-  - :filter-fn, a predicate of a result to keep it
+  - :filter-pred, a predicate of a result to keep it
   - :rank-fn, a function of a result to order by, ascending, instead of
     the score
   - :max-completions and :max-expansions, the most terms that a prefix

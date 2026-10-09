@@ -54,7 +54,7 @@
     (is (= {:title "Clojure…"} (:stored (first (search/query idx "clojure")))))
     (is (nil? (:stored (second (search/query idx "clojure")))))
     (is (= 1 (count (search/query idx "clojure" {:limit 1}))))
-    (is (= [2] (ids "clojure" {:filter-fn #(= 2 (:id %))}))))
+    (is (= [2] (ids "clojure" {:filter-pred #(= 2 (:id %))}))))
   (testing "the ranking is an option"
     (is (= [2] (ids "clojure" {:boosts {:title 0 :description 1}}))
         "a field boosted by zero does not match")

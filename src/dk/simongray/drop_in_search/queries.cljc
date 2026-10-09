@@ -510,16 +510,16 @@
 (defn- with-edits
   "The term `leaf` with the edits that it allows as its :fuzzy: those of
   its own, or of `fuzzy` when that's true or a number, or else when
-  `fuzzy` is nil and `known-fn` doesn't know it. Its length decides the
+  `fuzzy` is nil and `known-pred` doesn't know it. Its length decides the
   edits of true and :auto, by the `lengths`."
-  [{:keys [term] :as leaf} fuzzy known-fn lengths]
+  [{:keys [term] :as leaf} fuzzy known-pred lengths]
   (let [wanted (cond
                  (:fuzzy leaf)    (:fuzzy leaf)
                  (true? fuzzy)    :auto
                  (number? fuzzy)  fuzzy
                  (and (nil? fuzzy)
-                      known-fn
-                      (not (known-fn leaf))) :auto)]
+                      known-pred
+                      (not (known-pred leaf))) :auto)]
     (cond-> leaf
       wanted (assoc :fuzzy (if (= :auto wanted)
                              (auto-edits term lengths)
@@ -527,10 +527,11 @@
 
 (defn- with-fuzzy
   "The query `node` with the edits that each of its terms allows by
-  `fuzzy`, `known-fn` and `lengths`, but none in a script without spaces."
-  [node fuzzy known-fn lengths]
+  `fuzzy`, `known-pred` and `lengths`, but none in a script without
+  spaces."
+  [node fuzzy known-pred lengths]
   (map-leaves #(if (and (:term %) (not (analysis/unspaced? (:term %))))
-                 (with-edits % fuzzy known-fn lengths)
+                 (with-edits % fuzzy known-pred lengths)
                  %)
               node))
 
@@ -545,10 +546,10 @@
 
 (defn ^:no-doc fuzzy-query
   "The query `q` as data, read with `opts`, with the edits that each of
-  its terms allows by their :fuzzy, :typo-lengths and :known-fn."
-  [q {:keys [fuzzy typo-lengths known-fn] :as opts}]
+  its terms allows by their :fuzzy, :typo-lengths and :known-pred."
+  [q {:keys [fuzzy typo-lengths known-pred] :as opts}]
   (some-> (as-query q opts)
-          (with-fuzzy fuzzy known-fn typo-lengths)))
+          (with-fuzzy fuzzy known-pred typo-lengths)))
 
 (defn- term-matches?
   [term prefix? found]
@@ -691,13 +692,13 @@
 
   - :width, the number of characters shown, 160 by default
   - :fuzzy, which words match words with typos too: by default those that
-    :known-fn doesn't know, true for all, a number for all with at most
+    :known-pred doesn't know, true for all, a number for all with at most
     that many edits, up to 2, and false for none but those marked with ~
   - :typo-lengths, the shortest words with one edit and with two, [3 6]
     by default, as Elasticsearch's AUTO
-  - :known-fn, a predicate of a term of a query, e.g. {:term \"clojure\"},
-    that tells whether the documents of an index hold it; without it, no
-    word is unknown"
+  - :known-pred, a predicate of a term of a query, e.g.
+    {:term \"clojure\"}, that tells whether the documents of an index
+    hold it; without it, no word is unknown"
   ([text q]
    (snippet text q {}))
   ([text q {:keys [width] :or {width 160} :as opts}]
@@ -727,20 +728,20 @@
        (< to length) (conj {:text "…"})))))
 
 (defn- satisfied?
-  "Whether the query `node` holds when `found-fn` tells which of its terms
-  and phrases a text has, as a query of an index matches a document: all
-  of :and, any of :or, but none of those under a :not, and nothing for a
-  :not alone."
-  [found-fn node]
+  "Whether the query `node` holds when `found-pred` tells which of its
+  terms and phrases a text has, as a query of an index matches a document:
+  all of :and, any of :or, but none of those under a :not, and nothing for
+  a :not alone."
+  [found-pred node]
   (let [k (kind node)]
     (case k
       (:and :or)      (let [[positive negative] (clauses (get node k))
-                            holds?              #(satisfied? found-fn %)
+                            holds?              #(satisfied? found-pred %)
                             all-or-any          ({:and every? :or some} k)]
                         (boolean (and (seq positive)
                                       (all-or-any holds? positive)
                                       (not-any? holds? negative))))
-      (:term :phrase) (found-fn node)
+      (:term :phrase) (found-pred node)
       false)))
 
 (defn matches?
