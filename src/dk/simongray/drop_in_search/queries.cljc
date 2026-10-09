@@ -105,14 +105,14 @@
         signs))
 
 (defn- field-name
-  "The name in `s` of one of `fields`, a map of folded names to fields,
-  with the sign of :field after it in `syntax`, as a pair, or nil."
-  [s syntax fields]
+  "The name in `s` of one of the `aliases`, a map of folded names to
+  fields, with the sign of :field after it in `syntax`, as a pair, or nil."
+  [s syntax aliases]
   (some (fn [sign]
           (when-let [at (str/index-of s sign)]
             (let [name (subs s 0 at)]
               (when (and (pos? at)
-                         (contains? fields (analysis/fold name)))
+                         (contains? aliases (analysis/fold name)))
                 [name sign]))))
         (:field syntax)))
 
@@ -132,16 +132,16 @@
         (:fuzzy syntax)))
 
 (defn- word-lexemes
-  "The lexemes of the word `raw` of a query in `syntax` that can name
-  `fields`: a :not for a sign at its start, a :field for a field's name
+  "The lexemes of the word `raw` of a query in `syntax` with field
+  `aliases`: a :not for a sign at its start, a :field for a field's name
   and a sign after it, and the :word, with :prefix? when it ends in a
   sign of one, and :fuzzy with the edits after a sign of :fuzzy."
-  [{:keys [text start end] :as raw} syntax fields]
+  [{:keys [text start end] :as raw} syntax aliases]
   (let [not-sign     (leading-sign (remove word-spelling? (:not syntax))
                                    text)
         after-not    (+ start (count not-sign))
         rest-text    (subs text (count not-sign))
-        [name sign]  (field-name rest-text syntax fields)
+        [name sign]  (field-name rest-text syntax aliases)
         after-field  (+ after-not (count name) (count sign))
         word         (subs rest-text (+ (count name) (count sign)))
         prefix-sign  (some #(when (str/ends-with? word %) %) (:prefix syntax))
@@ -152,7 +152,7 @@
     (cond-> []
       not-sign    (conj {:kind :not :start start :end after-not})
       name        (conj {:kind  :field
-                         :field (get fields (analysis/fold name))
+                         :field (get aliases (analysis/fold name))
                          :start after-not
                          :end   after-field})
       (seq word)  (conj (cond-> {:kind    :word
@@ -163,9 +163,9 @@
                           edits (assoc :fuzzy edits))))))
 
 (defn- lexemes-of
-  "The lexemes of the `raw` lexeme of a query in `syntax` that can name
-  `fields`."
-  [{:keys [text start end] :as raw} syntax fields]
+  "The lexemes of the `raw` lexeme of a query in `syntax` with field
+  `aliases`."
+  [{:keys [text start end] :as raw} syntax aliases]
   (let [operator (some #(when (contains? (get syntax %) text) %)
                        [:and :or :not])
         at       {:start start :end end}]
@@ -189,22 +189,22 @@
       [(assoc at :kind :not-sign)]
 
       :else
-      (word-lexemes raw syntax fields))))
+      (word-lexemes raw syntax aliases))))
 
 (defn- lexemes
-  "The lexemes of the query `q` in `syntax` that can name `fields`, as
-  maps of :kind, :start and :end.
+  "The lexemes of the query `q` in `syntax` with field `aliases`, as maps
+  of :kind, :start and :end.
 
   The kinds are :open and :close, :and, :or and :not, a :field with the
   field, and a :phrase or :word with its :text. The last word has
   :typing? when nothing follows it. Reading stops after `max-terms`
   words and phrases."
-  [q syntax fields max-terms]
+  [q syntax aliases max-terms]
   (let [term? #(contains? #{:word :phrase} (:kind %))
         read  (fn [[found n] raw]
                 (if (<= (long max-terms) (long n))
                   (reduced [found n])
-                  (let [more (lexemes-of raw syntax fields)]
+                  (let [more (lexemes-of raw syntax aliases)]
                     [(into found more) (+ n (count (filter term? more)))])))
         [found] (reduce read [[] 0] (raw-lexemes (lexeme-pattern syntax) q))
         ;; a sign of :not on its own is a :not right before a phrase or a
@@ -417,9 +417,9 @@
           :or   {operator :and prefix? true min-prefix 1}}
          (merge default-limits opts)
          spellings (merge syntax (:syntax opts))
-         fields    (update-keys (or aliases {}) analysis/fold)
+         aliases   (update-keys (or aliases {}) analysis/fold)
          q         (spaced (str q))
-         ctx       {:lexemes    (lexemes q spellings fields max-terms)
+         ctx       {:lexemes    (lexemes q spellings aliases max-terms)
                     :operator   operator
                     :complete?  prefix?
                     :min-prefix min-prefix
@@ -517,15 +517,16 @@
 (defn- with-edits
   "The term `leaf` with the edits that it allows as its :fuzzy: those of
   its own, or of `fuzzy` when that's true or a number, or else when
-  `unknown?` picks it and `fuzzy` is nil. Its length decides the edits of
-  true and :auto by the `lengths` of auto-edits."
-  [{:keys [term] :as leaf} fuzzy unknown? lengths]
+  `fuzzy` is nil and `known-fn` doesn't know it. Its length decides the
+  edits of true and :auto by the `lengths` of auto-edits."
+  [{:keys [term] :as leaf} fuzzy known-fn lengths]
   (let [wanted (cond
                  (:fuzzy leaf)    (:fuzzy leaf)
                  (true? fuzzy)    :auto
                  (number? fuzzy)  fuzzy
                  (and (nil? fuzzy)
-                      (unknown? leaf)) :auto)]
+                      known-fn
+                      (not (known-fn leaf))) :auto)]
     (cond-> leaf
       wanted (assoc :fuzzy (if (= :auto wanted)
                              (auto-edits term lengths)
@@ -533,11 +534,11 @@
 
 (defn- with-fuzzy
   "The query `node` with the edits that each of its terms allows, as
-  with-edits gives them with `fuzzy`, `unknown?` and `lengths`, but none
+  with-edits gives them with `fuzzy`, `known-fn` and `lengths`, but none
   for a script without spaces."
-  [node fuzzy unknown? lengths]
+  [node fuzzy known-fn lengths]
   (map-leaves #(if (and (:term %) (not (analysis/unspaced? (:term %))))
-                 (with-edits % fuzzy unknown? lengths)
+                 (with-edits % fuzzy known-fn lengths)
                  %)
               node))
 
@@ -553,14 +554,10 @@
 (defn ^:no-doc fuzzy-query
   "The query `q` as as-query reads it with the `opts` of snippet, with the
   edits that each of its terms allows by their :fuzzy, :typo-lengths and
-  :known?."
-  [q {:keys [fuzzy typo-lengths known?] :as opts}]
+  :known-fn."
+  [q {:keys [fuzzy typo-lengths known-fn] :as opts}]
   (some-> (as-query q opts)
-          (with-fuzzy fuzzy
-                      (if known?
-                        (complement known?)
-                        (constantly false))
-                      typo-lengths)))
+          (with-fuzzy fuzzy known-fn typo-lengths)))
 
 (defn- term-matches?
   [term prefix? found]
@@ -704,11 +701,12 @@
 
   - :width, the number of characters shown, 160 by default
   - :fuzzy, which words match words with typos too: by default those that
-    :known? doesn't know, true for all, a number for all with at most that
-    many edits, and false for none but those marked with ~ in the query
+    :known-fn doesn't know, true for all, a number for all with at most
+    that many edits, and false for none but those marked with ~ in the
+    query
   - :typo-lengths, the shortest words with one edit and with two, [3 6]
     by default, as the AUTO:3,6 of Elasticsearch
-  - :known?, a predicate of a term of a query, e.g. {:term \"clojure\"},
+  - :known-fn, a predicate of a term of a query, e.g. {:term \"clojure\"},
     that tells whether the documents of an index hold it; without it, no
     word is unknown"
   ([text q]
@@ -740,20 +738,20 @@
        (< to length) (conj {:text "…"})))))
 
 (defn- satisfied?
-  "Whether the query `node` holds when `found?` tells which of its terms
+  "Whether the query `node` holds when `found-fn` tells which of its terms
   and phrases a text has, as a query of an index matches a document: all
   of :and, any of :or, but none of those under a :not, and nothing for a
   :not alone."
-  [found? node]
+  [found-fn node]
   (let [k (kind node)]
     (case k
       (:and :or)      (let [[positive negative] (clauses (get node k))
-                            holds?              #(satisfied? found? %)
+                            holds?              #(satisfied? found-fn %)
                             all-or-any          ({:and every? :or some} k)]
                         (boolean (and (seq positive)
                                       (all-or-any holds? positive)
                                       (not-any? holds? negative))))
-      (:term :phrase) (found? node)
+      (:term :phrase) (found-fn node)
       false)))
 
 (defn matches?

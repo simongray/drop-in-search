@@ -319,12 +319,12 @@
   (boolean (re-matches #"segment-[0-9a-f]{16}\.ciff" (str name))))
 
 (defn plan
-  "The documents to put into a store that holds the documents named
-  `stored`, and the names to delete from it, so that it holds `index`.
+  "The documents to put into a store that holds the documents of the
+  `names`, and the names to delete from it, so that it holds `index`.
 
   It's a map of :put, documents as maps of :name and :body to put in this
   order, and :delete, the names of the documents of segments that `index`
-  no longer has. Without `stored`, it's every document. The store needs
+  no longer has. Without `names`, it's every document. The store needs
   a place of its own, e.g. a folder, since plan deletes the documents of
   any index there but this one.
 
@@ -340,9 +340,9 @@
         (run! delete-document! delete))"
   ([index]
    (plan index #{}))
-  ([index stored]
+  ([index names]
    (let [index    (search/restore index)
-         held     (set stored)
+         held     (set names)
          by-name  (into {} (map (juxt segment/segment-name identity))
                         (rseq (:segments index)))
          put      (for [[name segment] by-name

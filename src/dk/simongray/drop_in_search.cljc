@@ -928,15 +928,15 @@
 
 (defn- kept
   "The vector `top` of at most `n` results, sorted by the comparator
-  `before`, with `result` in its place, or as it is when `result` is no
+  `cmp`, with `result` in its place, or as it is when `result` is no
   better than the worst of `n`."
-  [before n top result]
+  [cmp n top result]
   (if (and (= (count top) n)
-           (<= 0 (before result (peek top))))
+           (<= 0 (cmp result (peek top))))
     top
     (let [i   (loop [i 0]
                 (if (and (< i (count top))
-                         (<= (before (top i) result) 0))
+                         (<= (cmp (top i) result) 0))
                   (recur (inc i))
                   i))
           top (into (conj (subvec top 0 i) result) (subvec top i))]
@@ -945,35 +945,35 @@
         top))))
 
 (defn- best
-  "The `results` sorted by the comparator `before`, at most `n` of them if
+  "The `results` sorted by the comparator `cmp`, at most `n` of them if
   `n` is given.
 
   For a small `n`, the best so far are kept in a small sorted vector, so
   that most candidates cost one comparison with its worst. For an `n`
   beyond the square root of the number of results, all are sorted."
-  [before n results]
+  [cmp n results]
   (cond
     (and n (<= n 0))
     []
 
     (or (nil? n) (>= n (Math/sqrt (count results))))
-    (let [sorted (sort before results)]
+    (let [sorted (sort cmp results)]
       (vec (if n (take n sorted) sorted)))
 
     :else
-    (reduce #(kept before n %1 %2) [] results)))
+    (reduce #(kept cmp n %1 %2) [] results)))
 
 (defn- top
   "The best `n` of the `found` documents, or all of them for a nil `n`, as
-  the results that `result` makes of each, with the :filter and :rank of
-  `opts`."
-  [found result n {:keys [rank] keep? :filter :as opts}]
+  the results that `result-fn` makes of each, with the :filter-fn and
+  :rank-fn of `opts`."
+  [found result-fn n {:keys [filter-fn rank-fn] :as opts}]
   (cond
-    rank
+    rank-fn
     (->> found
-         (map result)
-         (filter (or keep? any?))
-         (map (fn [r] [(rank r) r]))
+         (map result-fn)
+         (filter (or filter-fn any?))
+         (map (fn [r] [(rank-fn r) r]))
          (sort-by first)
          (map second)
          (#(if n (take n %) %))
@@ -981,24 +981,24 @@
 
     ;; a filter that costs, e.g. criteria of a library, reads the best
     ;; first, and more of them only when too few are kept
-    (and keep? n)
+    (and filter-fn n)
     (loop [m (* 2 (max 1 (long n))) read 0 kept []]
       (let [best-m (best better m found)
             kept   (into kept
-                         (comp (filter #(keep? (result %)))
+                         (comp (filter #(filter-fn (result-fn %)))
                                (take (- (long n) (count kept))))
                          (subvec best-m read))]
         (if (or (= (count kept) n)
                 (>= m (count found)))
-          (mapv result kept)
+          (mapv result-fn kept)
           (recur (* 4 m) (count best-m) kept))))
 
     :else
-    (->> (if keep?
-           (filter #(keep? (result %)) found)
+    (->> (if filter-fn
+           (filter #(filter-fn (result-fn %)) found)
            found)
          (best better n)
-         (mapv result))))
+         (mapv result-fn))))
 
 (defn- results
   "The documents of `segment` that match the prepared query `node`, as
@@ -1077,7 +1077,7 @@
   search.queries, so that they read a query as query does.
 
   Besides the defaults, they hold the names of the fields among the
-  :aliases, and :known?, which tells the terms that the documents hold."
+  :aliases, and :known-fn, which tells the terms that the documents hold."
   ([index]
    (query-opts index {}))
   ([index opts]
@@ -1086,8 +1086,8 @@
          names (into {} (for [field (keys fields)]
                           [(name-of field) field]))]
      (assoc opts
-            :aliases (merge names (:aliases opts))
-            :known?  #(known? segments %)))))
+            :aliases  (merge names (:aliases opts))
+            :known-fn #(known? segments %)))))
 
 (defn query
   "The documents of `index` that match the query `q`, best first, as maps
@@ -1111,9 +1111,9 @@
   - :aliases, other names that a query can give the fields, as a map of a
     name to a field
   - :k1 and :b, the saturation and length normalization of BM25F
-  - :filter, a predicate of a result to keep it
-  - :rank, a function of a result to order by, ascending, instead of the
-    score
+  - :filter-fn, a predicate of a result to keep it
+  - :rank-fn, a function of a result to order by, ascending, instead of
+    the score
   - :max-completions and :max-expansions, the limits of default-limits
 
   Equal scores come in the order of their ids, so the order is stable.

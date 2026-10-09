@@ -270,11 +270,11 @@
 ;; the unigrams of CJKBigramFilter's outputUnigrams do
 (defn- paired
   "The `characters` of a run in a script without spaces by position, with
-  `pair` making one of two neighbours: a pair at each position, the last
-  with the last character too in a vector, or the one character."
-  [pair characters]
+  `pair-fn` making one of two neighbours: a pair at each position, the
+  last with the last character too in a vector, or the one character."
+  [pair-fn characters]
   (if (next characters)
-    (let [pairs (mapv pair characters (rest characters))]
+    (let [pairs (mapv pair-fn characters (rest characters))]
       (conj (pop pairs) [(peek pairs) (peek characters)]))
     characters))
 

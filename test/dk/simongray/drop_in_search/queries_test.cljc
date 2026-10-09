@@ -61,9 +61,9 @@
          (queries/snippet "Closure tables and Clojure" "clojure~")))
   (is (queries/matches? "Closure tables" "clojre~"))
   (is (queries/matches? "Closure tables" "clojre " {:fuzzy true}))
-  (is (queries/matches? "Closure tables" "clojre " {:known? (constantly false)})
-      "a word that :known? doesn't know")
-  (is (not (queries/matches? "Closure tables" "clojre ")) "without :known?")
+  (is (queries/matches? "Closure tables" "clojre " {:known-fn (constantly false)})
+      "a word that :known-fn doesn't know")
+  (is (not (queries/matches? "Closure tables" "clojre ")) "without :known-fn")
   (is (= [nil 1 1 3 2] (map #(queries/distance %1 %2 3)
                            ["abc" "clojure" "clojure" "kitten" ""]
                            ["xyzwv" "clojre" "cljoure" "sitting" "ab"]))))
