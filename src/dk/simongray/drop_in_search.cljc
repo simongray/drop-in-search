@@ -299,7 +299,7 @@
     ;; counts is worked out once for each run of them
     (loop [i (long (aget pos-start k)) sum 0.0 field -1 counts 0.0]
       (if (< i to)
-        (let [no     (quot (aget positions i) segment/span)
+        (let [no     (quot (aget positions i) segment/positions-per-field)
               counts (if (= no field)
                        counts
                        (occurrence segment weights d no))]
@@ -827,7 +827,8 @@
   `slices` of each place of it there, with the `weights` of the fields."
   [segment weights d slices]
   (->> (phrase-starts segment slices)
-       (map #(occurrence segment weights d (quot % segment/span)))
+       (map #(occurrence segment weights d
+                         (quot % segment/positions-per-field)))
        (reduce + 0.0)))
 
 (defn- phrase-hits

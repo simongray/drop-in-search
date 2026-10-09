@@ -130,13 +130,13 @@ An index prints as EDN, and `search/restore` reads it back:
 ```
 
 For a large index, require `dk.simongray.drop-in-search.ciff` as `ciff`.
-Then `ciff/plan` gives you a manifest in EDN, a document for each segment
-of the index in the
+Then `ciff/plan` gives you a manifest in EDN, a file for each segment of
+the index in the
 [Common Index File Format](https://github.com/osirrc/ciff), and the names
-of the documents to delete. A segment's document is named after what it
-holds, so a change only adds the segments that are new. You can keep the
-documents in a folder, in IndexedDB or anywhere else, and
-`ciff/read-documents` reads them back.
+of the files to delete. A segment's file is named after what it holds, so
+a change only adds the segments that are new. You can keep the files in a
+folder, in IndexedDB or anywhere else, and `ciff/read-files` reads them
+back.
 
 Principles
 ----------

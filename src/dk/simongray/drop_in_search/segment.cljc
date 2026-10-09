@@ -6,7 +6,7 @@
   #?(:clj (:import [java.io Writer]
                    [java.util Arrays])))
 
-(def ^{:no-doc true :const true} span
+(def ^{:no-doc true :const true} positions-per-field
   "The block of positions that each field of a document gets.
 
   Each position of a term in a document is offset by its field's number
@@ -130,13 +130,14 @@
 ;; - docs, the document of each posting, in order for each term, and
 ;;   pos-start, where its positions start in positions, with the end of
 ;;   the last
-;; - positions, those of each posting in order, offset as span says
+;; - positions, those of each posting in order, each in the block of its
+;;   field, as positions-per-field says
 ;; - lengths, the positions of each field of each document, width of them
 ;;   to a document, and field-stats, the documents with each field and
 ;;   their positions in all, by field number
 ;; - deleted, the numbers of the documents that are removed
-;; - name, that of its document in a store, which an equal segment can
-;;   have another of
+;; - name, that of its file in a store, which an equal segment can have
+;;   another of
 (declare contents segment-data)
 
 (deftype Segment [ids stored terms doc-start docs pos-start positions lengths
@@ -193,7 +194,7 @@
           [:terms :doc-start :docs :pos-start :positions :lengths]))
 
 (defn ^:no-doc segment-name
-  "The name of the document of `segment` in a store."
+  "The name of the file of `segment` in a store."
   [^Segment segment]
   (force (.-name segment)))
 
@@ -229,8 +230,8 @@
      :cljs (.padStart (.toString h 16) 8 "0")))
 
 (defn- content-name
-  "The name of the document of a segment with the parts in `m`, from a hash
-  of all that it holds, so that one that holds anything else has another."
+  "The name of the file of a segment with the parts in `m`, from a hash of
+  all that it holds, so that one that holds anything else has another."
   [{:keys [ids stored terms doc-start docs pos-start positions lengths]}]
   (let [arrays [doc-start docs pos-start positions lengths
                 (as-ints (mapv hash terms))
@@ -302,9 +303,9 @@
               (contains? numbers field)
               numbers
 
-              ;; the positions of a field start at its number times span,
-              ;; in an int
-              (< (count numbers) (quot 2147483647 span))
+              ;; the positions of a field start at its number times
+              ;; positions-per-field, in an int
+              (< (count numbers) (quot 2147483647 positions-per-field))
               (assoc numbers field (count numbers))
 
               :else
@@ -332,8 +333,8 @@
   (persistent!
    (reduce (fn [acc field]
              (let [terms (get analyzed field)
-                   base  (long (* span (get numbers field)))
-                   n     (min span (count terms))]
+                   base  (long (* positions-per-field (get numbers field)))
+                   n     (min positions-per-field (count terms))]
                (loop [i 0 acc acc]
                  (if (< i n)
                    (let [term (nth terms i)
@@ -460,24 +461,24 @@
                  :deleted     #{}})))
 
 (defn- numbers-from
-  "An array of the number of each document of `segment` in a merged
+  "An array of the new number of each document of `segment` in a merged
   segment, counting from `base` and skipping those removed, which get
   -1."
   [^Segment segment base]
-  (let [n             (long (size segment))
-        deleted       (.-deleted segment)
-        ^ints numbers (make-ints n)]
+  (let [n                 (long (size segment))
+        deleted           (.-deleted segment)
+        ^ints new-numbers (make-ints n)]
     (loop [d 0 j (long base)]
       (when (< d n)
         (if (contains? deleted d)
-          (do (aset numbers d -1)
+          (do (aset new-numbers d -1)
               (recur (inc d) j))
-          (do (aset numbers d (int j))
+          (do (aset new-numbers d (int j))
               (recur (inc d) (inc j))))))
-    numbers))
+    new-numbers))
 
 (defn- renumbered
-  "For each of the `segments`, an array of the number of each of its
+  "For each of the `segments`, an array of the new number of each of its
   documents in one segment of them all in order, or -1 for one that is
   removed."
   [segments]
@@ -497,10 +498,10 @@
 
 (defn- copy-postings!
   "Copy the postings of `segment` from `from` to `to` of the documents that
-  `numbers` keep into the arrays `docs`, `pos-start` and `positions` of a
-  merged segment, from the posting `k` and the position `p` on, and give
-  where the copies end, as a pair."
-  [^Segment segment ^ints numbers from to
+  `new-numbers` keep into the arrays `docs`, `pos-start` and `positions`
+  of a merged segment, from the posting `k` and the position `p` on, and
+  give where the copies end, as a pair."
+  [^Segment segment ^ints new-numbers from to
    ^ints docs ^ints pos-start ^ints positions k p]
   (let [^ints old-docs      (.-docs segment)
         ^ints old-pos-start (.-pos-start segment)
@@ -508,7 +509,7 @@
         to                  (long to)]
     (loop [i (long from) k (long k) p (long p)]
       (if (< i to)
-        (let [d (aget numbers (aget old-docs i))]
+        (let [d (aget new-numbers (aget old-docs i))]
           (if (neg? d)
             (recur (inc i) k p)
             (let [start (aget old-pos-start i)
@@ -538,10 +539,10 @@
 
 (defn- merged-lengths
   "The lengths of the fields of the `n` documents of the `segments` that
-  their `numbers` keep, `width` of them to a document, as an array."
-  [segments numbers n width]
+  their `new-numbers` keep, `width` of them to a document, as an array."
+  [segments new-numbers n width]
   (let [^ints lengths (make-ints (* (long n) (long width)))]
-    (doseq [[^Segment segment ^ints nos] (map vector segments numbers)
+    (doseq [[^Segment segment ^ints nos] (map vector segments new-numbers)
             :let  [w (.-width segment)]
             d     (range (size segment))
             :let  [j (aget nos d)]
@@ -553,8 +554,8 @@
 ;; and the least of those terms comes next
 (defn- merged-postings
   "The terms of the `segments` and their postings of the documents that
-  their `numbers` keep, as the parts of one segment."
-  [segments numbers]
+  their `new-numbers` keep, as the parts of one segment."
+  [segments new-numbers]
   (let [total           (fn [f]
                           (reduce + 0 (map #(alength ^ints (f %)) segments)))
         ^ints docs      (make-ints (total #(.-docs ^Segment %)))
@@ -569,7 +570,7 @@
                             (if (and (< c (alength terms))
                                      (= term (aget terms c)))
                               (do (aset cursors i (inc c))
-                                  (copy-postings! segment (nth numbers i)
+                                  (copy-postings! segment (nth new-numbers i)
                                                   (aget starts c)
                                                   (aget starts (inc c))
                                                   docs pos-start positions
@@ -598,17 +599,17 @@
   "One segment of the `segments` in order, without their documents that
   are removed."
   [segments]
-  (let [segments (vec segments)
-        numbers  (renumbered segments)
-        width    (reduce max 0 (map #(.-width ^Segment %) segments))
-        kept     (fn [k]
-                   (into []
-                         (mapcat #(without-removed (k (parts %))
-                                                   (.-deleted ^Segment %)))
-                         segments))
-        ids      (kept :ids)
-        lengths  (merged-lengths segments numbers (count ids) width)]
-    (segment-of (assoc (merged-postings segments numbers)
+  (let [segments    (vec segments)
+        new-numbers (renumbered segments)
+        width       (reduce max 0 (map #(.-width ^Segment %) segments))
+        kept        (fn [k]
+                      (into []
+                            (mapcat #(without-removed (k (parts %))
+                                                      (.-deleted ^Segment %)))
+                            segments))
+        ids         (kept :ids)
+        lengths     (merged-lengths segments new-numbers (count ids) width)]
+    (segment-of (assoc (merged-postings segments new-numbers)
                        :ids         ids
                        :stored      (kept :stored)
                        :lengths     lengths

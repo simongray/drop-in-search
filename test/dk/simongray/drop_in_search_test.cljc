@@ -144,12 +144,12 @@
                     (swap! store assoc name body))
                   (swap! store #(apply dissoc % delete))
                   put))
-        read  #(ciff/read-documents (for [[name body] @store]
-                                        {:name name :body body}))]
+        read  #(ciff/read-files (for [[name body] @store]
+                                    {:name name :body body}))]
     (is (= ["index.edn"] (mapv :name (take-last 1 (save! idx))))
         "the manifest last")
     (is (= idx (read)) "read back as it was")
-    (is (= idx (ciff/read-documents
+    (is (= idx (ciff/read-files
                 (for [[name body] @store]
                   {:name name
                    :body (if (string? body)
@@ -176,10 +176,10 @@
       (save! anew)
       (is (= 2 (count @store)) "the segments of the old index are deleted")
       (is (= anew (read))))
-    (testing "documents that don't read"
+    (testing "files that don't read"
       (let [manifest    {:name "index.edn" :body (get @store "index.edn")}
             [name body] (first (dissoc @store "index.edn"))
-            read-of     #(error-type (fn [] (ciff/read-documents %)))]
+            read-of     #(error-type (fn [] (ciff/read-files %)))]
         (is (= ::ciff/malformed (read-of [])) "no manifest")
         (is (= ::ciff/malformed (read-of [manifest])) "a segment missing")
         (is (= ::ciff/malformed

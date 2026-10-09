@@ -1,7 +1,7 @@
 (ns dk.simongray.drop-in-search.ciff
-  "An index kept as documents in a store: a manifest in EDN, and a
-  document for each segment in the Common Index File Format, CIFF, which
-  other search engines can read.
+  "An index kept as files in a store: a manifest in EDN, and a file for
+  each segment in the Common Index File Format, CIFF, which other search
+  engines can read.
 
   CIFF is that of https://github.com/osirrc/ciff, its README and its
   CommonIndexFileFormat.proto of 2020-03. What CIFF lacks has fields of
@@ -15,12 +15,12 @@
                    [java.nio.charset StandardCharsets])))
 
 (def ^:no-doc version
-  "The version of the format of the documents of an index, which changes
-  only when the meaning of a part changes."
+  "The version of the format of the files of an index, which changes only
+  when the meaning of a part changes."
   1)
 
 (def ^:no-doc manifest-name
-  "The name of the document that lists the segments of an index."
+  "The name of the file that lists the segments of an index."
   "index.edn")
 
 (defn- make-bytes
@@ -271,7 +271,7 @@
                       segment from to)))
 
 (defn- segment-body
-  "The document of `segment` in CIFF, as bytes."
+  "The CIFF file of `segment`, as bytes."
   [^Segment segment]
   (binding [*print-length* nil
             *print-level*  nil]
@@ -296,8 +296,8 @@
 
 (defn- manifest
   "The manifest of `index` as EDN: its segments by the names of their
-  documents, with the numbers of their removed documents, and its fields
-  and defaults."
+  files, with the numbers of their removed documents, and its fields and
+  defaults."
   [index]
   (binding [*print-length* nil
             *print-level*  nil]
@@ -309,30 +309,30 @@
                                      (:segments index))}
               (:defaults index) (assoc :defaults (:defaults index))))))
 
-(defn- segment-document?
+(defn- segment-file?
   [name]
   (boolean (re-matches #"segment-[0-9a-f]{16}\.ciff" (str name))))
 
 (defn plan
-  "The documents to put into a store that holds the documents of the
-  `names`, and the names to delete from it, so that it holds `index`.
+  "The files to put into a store that holds the files of the `names`, and
+  the names to delete from it, so that it holds `index`.
 
-  It's a map of :put, documents as maps of :name and :body to put in this
+  It's a map of :put, files as maps of :name and :body to put in this
   order, and :delete, the names of the segments that `index` no longer
-  has. Without `names`, it's every document. The store needs a place of
-  its own, e.g. a folder, since the segments of any other index there are
+  has. Without `names`, it's every file. The store needs a place of its
+  own, e.g. a folder, since the segments of any other index there are
   deleted.
 
   The :body of the manifest is EDN, and that of a segment is CIFF, as a
   byte array on the JVM and a Uint8Array in JavaScript. A segment is
-  named after what it holds, so it's put once. Put the documents before
-  you delete, so that a store that a crash stops in between still holds
-  an index:
+  named after what it holds, so it's put once. Put the files before you
+  delete, so that a store that a crash stops in between still holds an
+  index:
 
-      (let [{:keys [put delete]} (plan idx (map :name (list-documents)))]
+      (let [{:keys [put delete]} (plan idx (map :name (list-files)))]
         (doseq [{:keys [name body]} put]
-          (put-document! name body))
-        (run! delete-document! delete))"
+          (put-file! name body))
+        (run! delete-file! delete))"
   ([index]
    (plan index #{}))
   ([index names]
@@ -345,13 +345,13 @@
                     {:name name :body (segment-body segment)})]
      {:put    (conj (vec put) {:name manifest-name :body (manifest index)})
       :delete (->> held
-                   (filter #(and (segment-document? %)
+                   (filter #(and (segment-file? %)
                                  (not (contains? by-name %))))
                    sort
                    vec)})))
 
 (defn- malformed
-  "An error of a document that doesn't read, with the `message` and the
+  "An error of a file that doesn't read, with the `message` and the
   `data`."
   [message data]
   (ex-info message (assoc data :type ::malformed)))
@@ -627,9 +627,9 @@
     out))
 
 (defn- segment-from
-  "The segment of the postings `lists` and the doc `records` that a CIFF
-  document named `name` holds, with the documents numbered `deleted`
-  removed, or throws ::malformed."
+  "The segment of the postings `lists` and the doc `records` that the CIFF
+  file named `name` holds, with the documents numbered `deleted` removed,
+  or throws ::malformed."
   [name lists records deleted]
   (let [n               (count records)
         widths          (map #(some-> ^ints (:lengths %) alength) records)
@@ -658,7 +658,7 @@
       (bad "A posting names a document that the segment doesn't have")
 
       (and (pos? (alength positions))
-           (<= width (quot highest segment/span)))
+           (<= width (quot highest segment/positions-per-field)))
       (bad "A position is in a field that the segment doesn't have")
 
       (not= n (count (into #{} (map :id) records)))
@@ -683,7 +683,7 @@
       :name        name})))
 
 (defn- read-segment
-  "The segment in `body`, the CIFF document named `name`, with the documents
+  "The segment in `body`, the CIFF file named `name`, with the documents
   numbered `deleted` removed, or throws ::malformed."
   [name body deleted]
   (let [bs     #?(:clj  body
@@ -721,7 +721,7 @@
                    (read-edn text :manifest))
         fields   (:fields manifest)
         named?   #(and (map? %)
-                       (segment-document? (:name %))
+                       (segment-file? (:name %))
                        (set? (:deleted %)))]
     (cond
       (not (and (map? manifest)
@@ -743,13 +743,13 @@
       :else
       manifest)))
 
-(defn read-documents
-  "The index in the documents `fetched`, maps of :name and :body: the
-  manifest index.edn, as text or UTF-8 bytes, and the segments it lists.
+(defn read-files
+  "The index in the files `fetched`, maps of :name and :body: the manifest
+  index.edn, as text or UTF-8 bytes, and the segments it lists.
 
-  It throws ::malformed when a document is missing or doesn't read, e.g.
-  for an app to build the index again, and ::newer-format for documents
-  of a newer version of the format."
+  It throws ::malformed when a file is missing or doesn't read, e.g. for
+  an app to build the index again, and ::newer-format for files of a
+  newer version of the format."
   [fetched]
   (let [bodies   (into {} (map (juxt :name :body)) fetched)
         manifest (read-manifest (get bodies manifest-name))
