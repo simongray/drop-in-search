@@ -35,7 +35,9 @@ It requires Clojure 1.11+ and Java 11+. Add it to the `:deps` in your
 `master`:
 
 ```clojure
-io.github.simongray/drop-in-search {:git/sha "…"}
+dk.simongray/drop-in-search
+{:git/url "https://github.com/simongray/drop-in-search"
+ :git/sha "…"}
 ```
 
 For ClojureScript, also set `:deps true` in your `shadow-cljs.edn`, since
