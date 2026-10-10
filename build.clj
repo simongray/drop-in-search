@@ -1,11 +1,27 @@
 (ns build
-  "Build and release the library:
+  "Build and release the library.
 
       clojure -T:build jar       ; target/drop-in-search-<version>.jar with
                                  ; its pom
       clojure -T:build install   ; into the local Maven repository
       clojure -T:build deploy    ; to Clojars, with CLOJARS_USERNAME and
-                                 ; CLOJARS_PASSWORD (a deploy token) set"
+                                 ; CLOJARS_PASSWORD (a deploy token) set
+
+  To release, bump the version below and in the README, and commit. Tag the
+  commit, e.g. as v0.1.0, and push both:
+
+      git tag -a v0.1.0 -m 0.1.0
+      git push origin master v0.1.0
+
+  Then deploy with the deploy token kept in the macOS Keychain:
+
+      token=$(security find-generic-password -s clojars-deploy -w)
+      CLOJARS_USERNAME=simongray CLOJARS_PASSWORD=$token clojure -T:build deploy
+
+  To replace that token with a new one from https://clojars.org/tokens, run
+  this and paste the new token at both prompts:
+
+      security add-generic-password -U -a simongray -s clojars-deploy -w"
   (:require [clojure.tools.build.api :as b]))
 
 (def lib

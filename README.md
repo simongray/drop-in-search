@@ -1,6 +1,8 @@
 drop-in-search
 ==============
 
+[![Clojars Project](https://img.shields.io/clojars/v/dk.simongray/drop-in-search.svg)](https://clojars.org/dk.simongray/drop-in-search)
+
 This is a Clojure and ClojureScript library for adding full-text search
 to your app, e.g. to search the posts of a blog, the episodes of a
 podcast app, or the records of a CMS. It's a search engine without a
@@ -30,13 +32,25 @@ results on each.
 Getting started
 ---------------
 
-It requires Clojure 1.11+ and Java 11+, and it's on
-[Clojars](https://clojars.org/dk.simongray/drop-in-search). Add it to the
+It requires Clojure 1.11+ and Java 11+. For the latest release, add it
+from [Clojars](https://clojars.org/dk.simongray/drop-in-search) to the
 `:deps` in your `deps.edn`:
 
 ```clojure
 dk.simongray/drop-in-search {:mvn/version "0.1.0"}
 ```
+
+For changes that aren't released yet, use the SHA of the latest commit on
+`master` instead:
+
+```clojure
+dk.simongray/drop-in-search
+{:git/url "https://github.com/simongray/drop-in-search"
+ :git/sha "…"}
+```
+
+For ClojureScript, shadow-cljs only reads Git dependencies from
+`deps.edn`, so also set `:deps true` in your `shadow-cljs.edn`.
 
 Then make a document of each of your records. A document has an `:id`,
 the `:fields` to search, and the `:stored` data that comes back in a
