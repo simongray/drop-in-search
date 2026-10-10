@@ -30,18 +30,13 @@ results on each.
 Getting started
 ---------------
 
-It requires Clojure 1.11+ and Java 11+. Add it to the `:deps` in your
-`deps.edn` as a Git dependency, with the SHA of the latest commit on
-`master`:
+It requires Clojure 1.11+ and Java 11+, and it's on
+[Clojars](https://clojars.org/dk.simongray/drop-in-search). Add it to the
+`:deps` in your `deps.edn`:
 
 ```clojure
-dk.simongray/drop-in-search
-{:git/url "https://github.com/simongray/drop-in-search"
- :git/sha "…"}
+dk.simongray/drop-in-search {:mvn/version "0.1.0"}
 ```
-
-For ClojureScript, also set `:deps true` in your `shadow-cljs.edn`, since
-shadow-cljs only reads Git dependencies from `deps.edn`.
 
 Then make a document of each of your records. A document has an `:id`,
 the `:fields` to search, and the `:stored` data that comes back in a
