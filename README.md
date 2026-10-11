@@ -9,8 +9,9 @@ podcast app, or the records of a CMS. It's a search engine without a
 server or a UI: you make documents of your own data, and it gives you the
 best matches, which you show however you like.
 
-- **Ranking.** It ranks the results by BM25F, and a match in one field
-  can count more than a match in another.
+- **Ranking.** It ranks the results by
+  [BM25F](https://www.elastic.co/blog/practical-bm25-part-2-the-bm25-algorithm-and-its-variables),
+  and a match in one field can count more than a match in another.
 - **Queries.** Your users can type AND, OR and NOT, "phrases", prefixes
   and field:word, as in SQLite or Lucene, and a word with a typo still
   finds the words it's close to.
@@ -19,7 +20,8 @@ best matches, which you show however you like.
 - **Snippets.** It marks where a text matches a query, e.g. for a list of
   results.
 - **Saving.** An index prints as EDN, and a large one can be saved in the
-  Common Index File Format, e.g. in a folder or IndexedDB.
+  Common Index File Format, e.g. in a folder or
+  [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API).
 
 The same code runs on the JVM, in Node and in the browser, with the same
 results on each.
@@ -141,8 +143,9 @@ An index prints as EDN, and `search/restore` reads it back:
 ```
 
 For a large index, require `dk.simongray.drop-in-search.ciff` as `ciff`.
-Then `ciff/plan` gives you a manifest in EDN, a file for each segment of
-the index in the
+Then `ciff/plan` gives you a manifest in EDN, a file for each
+[segment](https://lucene.apache.org/core/9_11_1/core/org/apache/lucene/codecs/lucene99/package-summary.html#Segments)
+of the index in the
 [Common Index File Format](https://github.com/osirrc/ciff), and the names
 of the files to delete. A segment's file is named after what it holds, so
 a change only adds the segments that are new. You can keep the files in a
@@ -153,20 +156,25 @@ Principles
 ----------
 
 - **Standards first.** The ranking is BM25F as Robertson and Zaragoza
-  define it, and the query language takes the words of SQLite FTS5 and
-  the signs of Lucene's simple query parser. Other search engines can
-  read a saved index, and the code cites its sources.
+  define it, and the query language takes the words of
+  [SQLite FTS5](https://www.sqlite.org/fts5.html#full_text_query_syntax)
+  and the signs of
+  [Lucene's simple query parser](https://lucene.apache.org/core/9_11_1/queryparser/org/apache/lucene/queryparser/simple/SimpleQueryParser.html).
+  Other search engines can read a saved index, and the code cites its
+  sources.
 - **Fields count together.** A word's matches in each field are weighted
   and added up before they count, so a word that appears once in each of
   three fields counts as much as one that appears three times in one
   field.
 - **The same words everywhere.** Words split at anything that isn't a
-  letter or a digit. The word segmenters of Java and JavaScript split
-  Chinese differently, so the library doesn't use them, and an index
-  finds the same words on every device.
+  letter or a digit. The
+  [word segmenters](https://en.wikipedia.org/wiki/Text_segmentation#Word_segmentation)
+  of Java and JavaScript split Chinese differently, so the library
+  doesn't use them, and an index finds the same words on every device.
 - **No stemming.** The last word of a query completes as a prefix
   instead, and a field given as a vector of terms is taken as it is, so
-  you can bring your own stemmer.
+  you can bring your own
+  [stemmer](https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html).
 - **Typos per word.** By default, only a word that no document holds
   also matches words with typos, rather than every word of a query that
   finds too little, so the words that are spelled right stay exact.
