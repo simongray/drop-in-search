@@ -39,7 +39,7 @@ from [Clojars](https://clojars.org/dk.simongray/drop-in-search) to the
 `:deps` in your `deps.edn`:
 
 ```clojure
-dk.simongray/drop-in-search {:mvn/version "0.1.0"}
+dk.simongray/drop-in-search {:mvn/version "0.1.1"}
 ```
 
 For changes that aren't released yet, use the SHA of the latest commit on
