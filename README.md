@@ -126,7 +126,8 @@ Options
 The functions that build an index or read a query take an optional map
 of options as their last argument, e.g. `:limit` and `:offset` for a page
 of results. The page has the `:total` of the matches in its metadata, for
-"1 to 10 of 243". The options of `search/index` are the defaults of every
+"1 to 10 of 243", unless a `:filter-pred` filled the page before it read
+them all. The options of `search/index` are the defaults of every
 query of that index, e.g. the `:boosts` above. The docstrings of
 `search/query` and `search.queries/parse` list them all.
 
@@ -155,7 +156,9 @@ the documents, of every query, and of a snippet, so that "posts" finds
 ```
 
 A function can't be saved with the index, so give the same `:term-fn`
-to `search/restore` and `ciff/read-files` when you read it back.
+to `search/restore` and `ciff/read-files` when you read it back. Without
+it, the words of the documents you add and of your queries stay as they
+are, unlike those already in the index.
 
 Saving an index
 ---------------

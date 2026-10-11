@@ -79,7 +79,12 @@
 (defn add
   "The `index` with the document `doc`, and the `docs` after it, each a map
   of :id, :fields and :stored. A document replaces any earlier one with
-  the same id."
+  the same id.
+
+  The words are mapped by the :term-fn of the index. An index read back
+  from EDN or CIFF has none until restore or ciff/read-files gives it
+  one, and without it the words of a new document stay as they are,
+  unlike those already in the index."
   ([index]
    index)
   ([index doc & docs]
