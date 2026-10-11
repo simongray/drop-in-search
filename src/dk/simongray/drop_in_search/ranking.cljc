@@ -2,14 +2,20 @@
   "The best results of a query: the highest scores first, and equal scores
   by id, unless a function of a result ranks them.")
 
-;; Ids that aren't both numbers compare by hash and then as strings, so
-;; that the order is total and the same on both platforms, which hash
+;; Numbers come first, and other ids compare by hash and then as strings,
+;; so that the order is total and the same on both platforms, which hash
 ;; numbers differently. BM25 ties are common, so this must stay cheap
 (defn- compare-ids
   "The order of the ids `x` and `y` of two results of the same score."
   [x y]
-  (if (and (number? x) (number? y))
+  (cond
+    (and (number? x) (number? y))
     (compare x y)
+
+    (or (number? x) (number? y))
+    (if (number? x) -1 1)
+
+    :else
     (let [hx (long (hash x))
           hy (long (hash y))]
       (cond

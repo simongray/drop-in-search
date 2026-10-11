@@ -338,4 +338,14 @@
                                     {:limit #?(:clj  Long/MAX_VALUE
                                                :cljs js/Number.MAX_SAFE_INTEGER)}))))
     (is (= (range 150) (mapv :id (search/query idx "same" {:limit 150})))
-        "a limit near the count sorts all")))
+        "a limit near the count sorts all"))
+  (let [idx (search/index (for [id ["b" :a "c" "a" :b 10 2.5]]
+                            {:id id :fields {:title "same words"}}))]
+    (is (= [2.5 10 :a "b" "c" "a" :b] (mapv :id (search/query idx "same")))
+        "numbers first, then other ids by hash, the same on both platforms"))
+  (let [idx   (search/index (for [i (range 300)]
+                              {:id     (if (even? i) i (str "s" i))
+                               :fields {:title "same words"}}))
+        found #(mapv :id (search/query idx "same" %))]
+    (is (= (take 10 (found {})) (found {:limit 10}))
+        "a limit keeps the head of the order of numbers and other ids")))
