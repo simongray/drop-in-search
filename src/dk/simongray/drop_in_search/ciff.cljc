@@ -744,13 +744,8 @@
       :else
       manifest)))
 
-(defn read-files
-  "The index in the files `fetched`, maps of :name and :body: the manifest
-  index.edn, as text or UTF-8 bytes, and the segments it lists.
-
-  It throws ::malformed when a file is missing or doesn't read, e.g. for
-  an app to build the index again, and ::newer-format for files of a
-  newer version of the format."
+(defn- read-index
+  "The index in the files `fetched`, as read-files reads it."
   [fetched]
   (let [bodies   (into {} (map (juxt :name :body)) fetched)
         manifest (read-manifest (get bodies manifest-name))
@@ -776,3 +771,18 @@
       (throw (malformed "A segment has fields that the index doesn't"
                         {:name manifest-name})))
     index))
+
+(defn read-files
+  "The index in the files `fetched`, maps of :name and :body, with the
+  :term-fn of `opts`: the manifest index.edn, as text or UTF-8 bytes, and
+  the segments it lists.
+
+  A function isn't in the files, so give the :term-fn that the index was
+  built with again. It throws ::malformed when a file is missing or
+  doesn't read, e.g. for an app to build the index again, and
+  ::newer-format for files of a newer version of the format."
+  ([fetched]
+   (read-files fetched {}))
+  ([fetched opts]
+   {:pre [(map? opts)]}
+   (indexing/with-term-fn (read-index fetched) (:term-fn opts))))

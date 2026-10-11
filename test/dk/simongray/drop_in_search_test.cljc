@@ -389,11 +389,11 @@
     (is (= [1] (ids "cloj" {:fuzzy true})) "and what it starts")
     (is (= [] (ids "clojre -clojure~1" {:fuzzy 2})) "a :not with typos")
     (testing "which words matched with typos, and in which results"
-      (is (= {:typos {"clojre" ["clojure" "closure"]}}
-             (meta (search/query idx "clojre "))))
-      (is (nil? (meta (search/query idx "rust "))) "none")
+      (is (= {"clojre" ["clojure" "closure"]}
+             (:typos (meta (search/query idx "clojre ")))))
+      (is (nil? (:typos (meta (search/query idx "rust ")))) "none")
       (let [found (search/query idx "clojure~ ")]
-        (is (= {:typos {"clojure" ["closure"]}} (meta found)))
+        (is (= {"clojure" ["closure"]} (:typos (meta found))))
         (is (= [nil {"clojure" ["closure"]}] (map :typos found))
             "a result that holds the word itself has none"))
       (let [idx (search/index [{:id 1 :fields {:title "Clojure, not Closure"}}])]
@@ -407,6 +407,56 @@
     (is (not (queries/matches? "Closure tables"
                              "clojre "
                              (search/query-opts idx {:fuzzy false}))))))
+
+(defn- singular
+  "The term `t` without the s of an English plural, a stemmer just good
+  enough for a test."
+  [t]
+  (if (and (< 3 (count t)) (= \s (last t)))
+    (subs t 0 (dec (count t)))
+    t))
+
+(deftest a-term-fn
+  (let [docs [{:id 1 :fields {:body "A post about running shoes"}}
+              {:id 2 :fields {:body "Two posts"}}]
+        idx  (search/index docs {:term-fn singular :boosts {:body 2}})
+        ids  (fn [idx q & [opts]] (sort (map :id (search/query idx q (or opts {})))))]
+    (is (= [1 2] (ids idx "posts ") (ids idx "post ")) "posts finds post, and post finds posts")
+    (is (= [1] (ids idx "\"running shoe\" ")) "in a phrase too")
+    (is (= [1 2] (ids idx "pos")) "and the word being typed")
+    (is (= [{:text "Two "} {:text "posts" :match? true}]
+           (queries/snippet "Two posts" "post " (search/query-opts idx)))
+        "a snippet marks the words that the terms come from")
+    (is (queries/matches? "Two posts" "post " (search/query-opts idx)))
+    (is (= [1 2] (ids (search/add idx {:id 3 :fields {:body "Other"}}) "posts "))
+        "an index keeps its function when it changes")
+    (testing "a function isn't printed, so it's given again to read an index back"
+      (let [printed (edn/read-string (pr-str idx))]
+        (is (= {:boosts {:body 2}} (:defaults printed)))
+        (is (= [1 2] (ids (search/restore printed {:term-fn singular}) "posts ")))
+        (is (= [] (ids (search/restore printed) "posts " {:fuzzy false}))
+            "without it, the words of a query aren't those of the index"))
+      (let [{:keys [put]} (ciff/plan idx)]
+        (is (= [1 2] (ids (ciff/read-files put {:term-fn singular}) "posts ")))))))
+
+(deftest the-total-of-a-page
+  (let [many  (search/index (for [i (range 25)] {:id i :fields {:title (str "Clojure " i)}}))
+        total #(:total (meta (search/query many "clojure " %)))]
+    (is (= 25 (total {:limit 10})) "for 1 to 10 of 25")
+    (is (= [25 5] ((juxt (comp :total meta) count) (search/query many "clojure " {:limit 10 :offset 20}))))
+    (is (= 13 (total {:filter-pred #(even? (:id %))})) "of those that the filter keeps")
+    (is (= 2 (total {:limit 5 :filter-pred #(< (:id %) 2)})) "when it had to read them all")
+    (is (nil? (total {:limit 5 :filter-pred #(even? (:id %))}))
+        "but not when the filter stopped once it filled the page")
+    (is (= 13 (total {:limit 5 :filter-pred #(even? (:id %)) :rank-fn :id})))
+    (is (= 0 (:total (meta (search/query many "rust ")))))))
+
+(deftest dates
+  (let [idx (search/index [{:id 1 :fields {:published #inst "2024-03-01T09:30:00Z"}}
+                           {:id 2 :fields {:published #{#inst "2023-12-24T18:00:00Z"}}}])]
+    (is (= [1] (mapv :id (search/query idx "2024-03 "))) "a date and time in UTC, the same on every platform")
+    (is (= [2] (mapv :id (search/query idx "2023-12-24 "))) "in a collection too")
+    (is (queries/matches? #inst "2024-03-01T09:30:00Z" "\"2024-03-01 09:30\" "))))
 
 (deftest hostile-queries
   (testing "a prefix stands for its completions that the most documents hold"

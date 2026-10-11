@@ -125,9 +125,37 @@ Options
 
 The functions that build an index or read a query take an optional map
 of options as their last argument, e.g. `:limit` and `:offset` for a page
-of results. The options of `search/index` are the defaults of every query
-of that index, e.g. the `:boosts` above. The docstrings of `search/query`
-and `search.queries/parse` list them all.
+of results. The page has the `:total` of the matches in its metadata, for
+"1 to 10 of 243". The options of `search/index` are the defaults of every
+query of that index, e.g. the `:boosts` above. The docstrings of
+`search/query` and `search.queries/parse` list them all.
+
+The library doesn't stem, but you can bring your own
+[stemmer](https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html)
+as the `:term-fn` of the index, a function of each term that gives the
+term to index and to look for in its place. It applies to the words of
+the documents, of every query, and of a snippet, so that "posts" finds
+"post":
+
+```clojure
+(require '[clojure.string :as str])
+
+(defn singular
+  "The term `t` without the s of an English plural, a stand-in for a real
+  stemmer."
+  [t]
+  (cond-> t
+    (and (< 3 (count t)) (str/ends-with? t "s")) (subs 0 (dec (count t)))))
+
+(def stemmed
+  (search/index (map document posts) {:term-fn singular}))
+
+(mapv :id (search/query stemmed "checkers" {:fuzzy false}))
+;; => ["borrowing"]
+```
+
+A function can't be saved with the index, so give the same `:term-fn`
+to `search/restore` and `ciff/read-files` when you read it back.
 
 Saving an index
 ---------------
@@ -170,11 +198,10 @@ Principles
   letter or a digit. The
   [word segmenters](https://en.wikipedia.org/wiki/Text_segmentation#Word_segmentation)
   of Java and JavaScript split Chinese differently, so the library
-  doesn't use them, and an index finds the same words on every device.
+  doesn't use them, and an index finds the same words on every device. A
+  date counts as its date and time in UTC, e.g. 2024-03-01 09:30:00.
 - **No stemming.** The last word of a query completes as a prefix
-  instead, and a field given as a vector of terms is taken as it is, so
-  you can bring your own
-  [stemmer](https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html).
+  instead, and a `:term-fn` brings a stemmer of your own.
 - **Typos per word.** By default, only a word that no document holds
   also matches words with typos, rather than every word of a query that
   finds too little, so the words that are spelled right stay exact.

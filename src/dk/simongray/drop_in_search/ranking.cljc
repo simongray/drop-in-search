@@ -72,18 +72,23 @@
 (defn ^:no-doc top
   "The best `n` of the `found` documents, or all of them for a nil `n`, as
   the results that `result-fn` makes of each, with the :filter-pred and
-  :rank-fn of `opts`."
+  :rank-fn of `opts`.
+
+  The results have the :total of those found that the filter keeps in
+  their metadata, unless the filter stopped once it had `n`."
   [found result-fn n {:keys [filter-pred rank-fn] :as opts}]
   (cond
     rank-fn
-    (->> found
-         (map result-fn)
-         (filter (or filter-pred any?))
-         (map (fn [r] [(rank-fn r) r]))
-         (sort-by first)
-         (map second)
-         (#(if n (take n %) %))
-         vec)
+    (let [kept (->> found
+                    (map result-fn)
+                    (filterv (or filter-pred any?)))]
+      (with-meta (->> kept
+                      (map (fn [r] [(rank-fn r) r]))
+                      (sort-by first)
+                      (map second)
+                      (#(if n (take n %) %))
+                      vec)
+                 {:total (count kept)}))
 
     ;; a filter that costs, e.g. criteria of a library, reads the best
     ;; first, and more of them only when too few are kept
@@ -94,14 +99,22 @@
                          (comp (filter #(filter-pred (result-fn %)))
                                (take (- (long n) (count kept))))
                          (subvec best-m read))]
-        (if (or (= (count kept) n)
-                (>= m (count found)))
+        (cond
+          (= (count kept) n)
           (mapv result-fn kept)
+
+          ;; every one was read, and too few kept to stop early
+          (>= m (count found))
+          (with-meta (mapv result-fn kept) {:total (count kept)})
+
+          :else
           (recur (* 4 m) (count best-m) kept))))
 
     :else
-    (->> (if filter-pred
-           (filter #(filter-pred (result-fn %)) found)
-           found)
-         (best better n)
-         (mapv result-fn))))
+    (let [kept (if filter-pred
+                 (filterv #(filter-pred (result-fn %)) found)
+                 found)]
+      (with-meta (->> kept
+                      (best better n)
+                      (mapv result-fn))
+                 {:total (count kept)}))))

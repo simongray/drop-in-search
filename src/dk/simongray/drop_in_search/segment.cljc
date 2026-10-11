@@ -305,14 +305,17 @@
 (defn- analyze
   "The terms of the field value `v` by position: a string tokenized, a
   vector taken as terms already, the text of each value of any other
-  collection tokenized, or else the text of `v`, e.g. of a number or a
-  keyword."
-  [v]
+  collection tokenized, or else the text of `v`, e.g. of a number, a
+  keyword or an instant. The `term-fn`, if any, maps each term of a text."
+  [v term-fn]
   (cond
-    (string? v) (analysis/tokens v)
+    (string? v) (analysis/mapped term-fn (analysis/tokens v))
     (vector? v) v
-    (coll? v)   (into [] (mapcat #(analysis/tokens (str %))) v)
-    :else       (analysis/tokens (str v))))
+    (coll? v)   (into [] (mapcat #(analysis/mapped
+                                   term-fn
+                                   (analysis/tokens (analysis/text %))))
+                      v)
+    :else       (analysis/mapped term-fn (analysis/tokens (analysis/text v)))))
 
 (defn ^:no-doc numbered
   "The `numbers` of the fields of an index, a map of field to number, with
@@ -369,11 +372,11 @@
 
 (defn ^:no-doc analyzed-fields
   "The terms by position of each of the `fields` of a document that has
-  any."
-  [fields]
+  any, with `term-fn` applied to the terms of a text, if it's given."
+  [fields term-fn]
   (into {}
         (keep (fn [[field v]]
-                (let [terms (analyze v)]
+                (let [terms (analyze v term-fn)]
                   (when (seq terms)
                     [field terms]))))
         fields))

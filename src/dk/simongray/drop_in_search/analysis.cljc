@@ -388,6 +388,40 @@
         [acc _]   (reduce-words add-word [(transient []) 0] (str s))]
     (persistent! acc)))
 
+(defn ^:no-doc mapped
+  "The terms by position `tokens`, as tokens gives them, with `term-fn`
+  applied to each, or as they are without one."
+  [term-fn tokens]
+  (if term-fn
+    (mapv #(if (vector? %) (mapv term-fn %) (term-fn %)) tokens)
+    tokens))
+
+(defn ^:no-doc mapped-spans
+  "The `spans`, as spans gives them, with `term-fn` applied to the :term of
+  each, or as they are without one."
+  [term-fn spans]
+  (if term-fn
+    (mapv #(update % :term term-fn) spans)
+    spans))
+
+;; RFC 3339, section 5.6, with a space for the T, so that the date and the
+;; time are words of their own, as a query of 2024-03 reads them
+(defn ^:no-doc instant-text
+  "The instant `t` as its date and time in UTC, e.g. 2024-03-01 09:30:00,
+  the same on every platform."
+  [t]
+  (let [iso #?(:clj  (str (java.time.Instant/ofEpochMilli (inst-ms t)))
+               :cljs (.toISOString (js/Date. (inst-ms t))))]
+    (str (subs iso 0 10) " " (subs iso 11 19))))
+
+(defn ^:no-doc text
+  "The text of the value `v` that an index or a query reads: an instant by
+  instant-text, and anything else by str."
+  [v]
+  (if (inst? v)
+    (instant-text v)
+    (str v)))
+
 (comment
   (fold "Café Ø Straße ΧΑΟΣ Ｐｏｄｃａｓｔ")
   (words "AIメモリ管理 don't stop")

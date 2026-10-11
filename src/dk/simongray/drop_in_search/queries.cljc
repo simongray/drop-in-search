@@ -226,10 +226,11 @@
 
   A word that ends in a sign of :prefix, or the last word while it's being
   typed, is a prefix, as is one character of Chinese, which a pair can
-  only start. A word with :fuzzy is a term with the edits it allows."
+  only start. A word with :fuzzy is a term with the edits it allows. The
+  :term-fn of `ctx`, if any, maps each term, as it maps those of an index."
   [{:keys [text prefix? typing? fuzzy] :as lexeme}
-   {:keys [complete? min-prefix]}]
-  (let [tokens  (analysis/tokens text)
+   {:keys [complete? min-prefix term-fn]}]
+  (let [tokens  (analysis/mapped term-fn (analysis/tokens text))
         terms   (mapv #(if (vector? %) (first %) %) tokens)
         prefix? (or prefix?
                     (and typing?
@@ -399,6 +400,8 @@
     default
   - :max-terms, the most words and phrases that count, and :max-depth,
     the deepest that groups nest
+  - :term-fn, a function of each term that gives the term to look for in
+    its place, e.g. a stemmer's, as the index of the query has it
 
   Nothing is an error, and a sign or a parenthesis that makes no sense
   counts for nothing."
@@ -406,7 +409,8 @@
    (parse q {}))
   ([q opts]
    {:pre [(map? opts)]}
-   (let [{:keys [aliases operator prefix? min-prefix max-terms max-depth]
+   (let [{:keys [aliases operator prefix? min-prefix max-terms max-depth
+                 term-fn]
           :or   {operator :and prefix? true min-prefix 1}}
          (merge default-limits opts)
          spellings (merge syntax (:syntax opts))
@@ -416,6 +420,7 @@
                     :operator   operator
                     :complete?  prefix?
                     :min-prefix min-prefix
+                    :term-fn    term-fn
                     :depth      0
                     :max-depth  max-depth}
          n         (count (:lexemes ctx))]
@@ -701,10 +706,10 @@
     hold it; without it, no word is unknown"
   ([text q]
    (snippet text q {}))
-  ([text q {:keys [width] :or {width 160} :as opts}]
+  ([text q {:keys [width term-fn] :or {width 160} :as opts}]
    {:pre [(map? opts)]}
-   (let [text       (str text)
-         spans      (analysis/spans text)
+   (let [text       (analysis/text text)
+         spans      (analysis/mapped-spans term-fn (analysis/spans text))
          query      (fuzzy-query q opts)
          found      (hits spans (leaves query))
          length     (count text)
@@ -749,13 +754,13 @@
   as one field of a document would."
   ([text q]
    (matches? text q {}))
-  ([text q opts]
+  ([text q {:keys [term-fn] :as opts}]
    {:pre [(map? opts)]}
-   (let [text   (str text)
+   (let [text   (analysis/text text)
          terms  (delay (into #{}
                              (mapcat #(if (vector? %) % [%]))
-                             (analysis/tokens text)))
-         spans  (delay (analysis/spans text))
+                             (analysis/mapped term-fn (analysis/tokens text))))
+         spans  (delay (analysis/mapped-spans term-fn (analysis/spans text)))
          found? (fn [{:keys [term phrase prefix?] :as leaf}]
                   (cond
                     phrase

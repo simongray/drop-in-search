@@ -5,7 +5,8 @@
   A document is a map of its :id, its :fields, and what a result gives
   back, under :stored. A field holds text, or anything whose text counts,
   such as a number or a set of keywords, but a vector holds terms to take
-  as they are.
+  as they are. The text of an instant is its date and time in UTC, e.g.
+  2024-03-01 09:30:00, and that of anything else is what str gives.
 
   Most of the code behind these functions is in these namespaces:
 
@@ -34,25 +35,39 @@
 
 (defn index
   "An index of the documents `docs`, or an empty one, with `opts` as the
-  defaults of its queries, e.g. the :boosts of its fields. The `opts`
-  print with the index, so they must be data."
+  defaults of its queries, e.g. the :boosts of its fields, and its
+  :term-fn.
+
+  The :term-fn is a function of each term of a text that gives the term
+  to index and to look for in its place, e.g. a stemmer's, so that posts
+  finds post. The other `opts` print with the index, so they must be data,
+  but a function can't, so give the :term-fn to restore and
+  ciff/read-files again."
   ([]
    {:segments [] :docs {} :fields {}})
   ([docs]
    (index docs {}))
-  ([docs opts]
+  ([docs {:keys [term-fn] :as opts}]
    {:pre [(map? opts)]}
-   (cond-> (indexing/compacted (indexing/added (index) docs))
-     (seq opts) (assoc :defaults opts))))
+   (let [defaults (dissoc opts :term-fn)]
+     (cond-> (-> (index)
+                 (indexing/with-term-fn term-fn)
+                 (indexing/added docs)
+                 indexing/compacted)
+       (seq defaults) (assoc :defaults defaults)))))
 
 (defn restore
   "The `index` read back from EDN with its arrays made again, which a query
-  of it otherwise does each time, or nil for a nil `index`."
-  [index]
-  (some-> index
-          (update :segments (partial mapv #(if (instance? Segment %)
-                                             %
-                                             (segment/segment-of %))))))
+  of it otherwise does each time, and the :term-fn of `opts` that it was
+  built with, or nil for a nil `index`."
+  ([index]
+   (restore index {}))
+  ([index {:keys [term-fn] :as opts}]
+   (some-> index
+           (update :segments (partial mapv #(if (instance? Segment %)
+                                              %
+                                              (segment/segment-of %))))
+           (indexing/with-term-fn term-fn))))
 
 (defn remove
   "The `index` without the document `id`, and the `ids` after it."
@@ -96,18 +111,19 @@
 
 (defn query-opts
   "The `opts` over the defaults of `index`, to read a query as the index
-  does: with the names of its fields among the :aliases, and a
-  :known-pred that tells the terms its documents hold."
+  does: with the names of its fields among the :aliases, its :term-fn,
+  and a :known-pred that tells the terms its documents hold."
   ([index]
    (query-opts index {}))
   ([index opts]
-   (let [{:keys [defaults fields segments]} (restore index)
+   (let [{:keys [defaults fields segments] :as index} (restore index)
          opts  (merge defaults opts)
          names (into {} (for [field (keys fields)]
                           [(name-of field) field]))]
-     (assoc opts
-            :aliases    (merge names (:aliases opts))
-            :known-pred #(terms/known? segments %)))))
+     (cond-> (assoc opts
+                    :aliases    (merge names (:aliases opts))
+                    :known-pred #(terms/known? segments %))
+       (indexing/term-fn index) (assoc :term-fn (indexing/term-fn index))))))
 
 (defn- context
   "The constants that preparing and matching a query of `index` with the
@@ -159,12 +175,16 @@
 
   Equal scores are ordered by id, numbers first and ascending, and other
   ids by hash, so the order is stable on both platforms.
-  When words matched others with typos, the results have :typos in their
-  metadata, a map of each such word to those it matched, the closest
-  first, and so does each result that holds a word only with typos:
+
+  The results have the :total of the documents that match in their
+  metadata, e.g. for \"1 to 10 of 243\", unless a :filter-pred had no need
+  to read them all. When words matched others with typos, the metadata
+  also has :typos, a map of each such word to those it matched, the
+  closest first, and so does each result that holds a word only with
+  typos:
 
       (meta (query idx \"intervew\"))
-      ;; => {:typos {\"intervew\" [\"interview\" \"interviews\"]}}"
+      ;; => {:total 2 :typos {\"intervew\" [\"interview\" \"interviews\"]}}"
   ([index q]
    (query index q {}))
   ([index q opts]
@@ -186,11 +206,14 @@
                              result
                              (some-> limit (+ (long offset)))
                              opts)
-         page   (subvec ranked (min (long offset) (count ranked)))]
-     (if (seq typos)
-       (with-meta (mapv #(terms/with-typos index typos %) page)
-                  {:typos (update-vals typos :near)})
-       page))))
+         page   (subvec ranked (min (long offset) (count ranked)))
+         total  (:total (meta ranked))
+         facts  (cond-> {}
+                  total       (assoc :total total)
+                  (seq typos) (assoc :typos (update-vals typos :near)))]
+     (cond-> page
+       (seq typos) (->> (mapv #(terms/with-typos index typos %)))
+       (seq facts) (with-meta facts)))))
 
 (comment
   (def idx

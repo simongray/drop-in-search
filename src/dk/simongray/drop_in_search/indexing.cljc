@@ -8,10 +8,25 @@
   - :docs, a map of each id to the index of its segment and its number
     there
   - :fields, a map of each field to its number
-  - :defaults, the options of its queries, if any"
+  - :defaults, the options of its queries, if any
+
+  Its :term-fn, if any, is in its metadata, since a function can't be
+  printed with it."
   (:require [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
   #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
+
+(defn ^:no-doc term-fn
+  "The function that maps each term of `index`, or nil."
+  [index]
+  (::term-fn (meta index)))
+
+(defn ^:no-doc with-term-fn
+  "The `index` with `f` as the function that maps each of its terms, or
+  as it is for a nil `f`."
+  [index f]
+  (cond-> index
+    f (vary-meta assoc ::term-fn f)))
 
 (defn- located
   "The `docs` of an index, a map of each id to the index of its segment and
@@ -128,9 +143,10 @@
   [index docs]
   (when-let [doc (some #(when (nil? (:id %)) %) docs)]
     (throw (ex-info "A document needs an :id" {:document doc})))
-  (let [docs (latest docs)]
+  (let [docs (latest docs)
+        f    (term-fn index)]
     (reduce (fn [index chunk]
-              (let [entries  (mapv #(update % :fields segment/analyzed-fields)
+              (let [entries  (mapv #(update % :fields segment/analyzed-fields f)
                                    chunk)
                     numbers  (reduce segment/numbered
                                      (:fields index)
