@@ -9,6 +9,7 @@
   it, https://protobuf.dev/programming-guides/encoding/"
   (:require #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as edn])
             [dk.simongray.drop-in-search :as search]
+            [dk.simongray.drop-in-search.indexing :as indexing]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
   #?(:clj (:import [dk.simongray.drop_in_search.segment Segment]
@@ -759,7 +760,7 @@
                            (throw (malformed "A segment of the index is missing"
                                              {:name name}))))
                        (:segments manifest))
-        index    (search/with-segments
+        index    (indexing/with-segments
                   (cond-> {:segments []
                            :docs     {}
                            :fields   (:fields manifest)}

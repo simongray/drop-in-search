@@ -278,6 +278,25 @@
   [^Segment segment]
   (- (size segment) (count (.-deleted segment))))
 
+(defn ^:no-doc term-ranges
+  "The postings in `segment` of those of `terms` that it holds, as pairs of
+  where they start and end."
+  [^Segment segment terms]
+  (let [held         (.-terms segment)
+        ^ints starts (.-doc-start segment)]
+    (into []
+          (keep (fn [term]
+                  (let [t (term-number held term)]
+                    (when (<= 0 t)
+                      [(aget starts t) (aget starts (inc t))]))))
+          terms)))
+
+(defn ^:no-doc postings-count
+  "The number of postings in the `ranges`, pairs of where they start and
+  end."
+  [ranges]
+  (reduce + 0 (map (fn [[from to]] (- (long to) (long from))) ranges)))
+
 (defn ^:no-doc with-removed
   "The `segment` with the documents numbered `nos` removed."
   [segment nos]
