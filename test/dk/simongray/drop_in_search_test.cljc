@@ -285,7 +285,11 @@
       (let [found (search/query idx "clojure~ ")]
         (is (= {:typos {"clojure" ["closure"]}} (meta found)))
         (is (= [nil {"clojure" ["closure"]}] (map :typos found))
-            "a result that holds the word itself has none")))
+            "a result that holds the word itself has none"))
+      (let [idx (search/index [{:id 1 :fields {:title "Clojure, not Closure"}}])]
+        (is (= [nil] (map :typos (search/query idx "clojure~ "))))
+        (is (= [nil] (map :typos (search/query idx "clojure " {:fuzzy true})))
+            "nor one that holds a near word too")))
     (is (= [{:text "Closure" :match? true} {:text " tables"}]
            (queries/snippet "Closure tables" "clojre " (search/query-opts idx)))
         "a snippet knows the words of the index")

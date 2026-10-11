@@ -211,7 +211,7 @@
         (keep (fn [{:keys [term summed typos]}]
                 (let [near (filterv #(not= term %) (:terms typos))]
                   (when (seq near)
-                    [term {:exact (:terms summed) :near near}]))))
+                    [term {:exact (or (:terms summed) [term]) :near near}]))))
         (search.queries/leaves node)))
 
 (defn- holds-term?
