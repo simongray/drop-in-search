@@ -28,6 +28,10 @@
   ([q opts]
    (mapv :id (search/query idx q opts))))
 
+(defn- close?
+  [x y]
+  (< (Math/abs (- x y)) 1e-9))
+
 (deftest the-index
   (testing "every word must occur; a word in the title weighs more"
     (is (= [1 2] (ids "clojure")))
@@ -76,7 +80,13 @@
         (is (= 2 (count (:docs idx))))
         (is (= [] (search/query idx "haskell")))
         (is (= [2] (mapv :id (search/query idx "clojure")))))
-      (is (= idx (search/remove idx :nobody)))))
+      (is (= idx (search/remove idx :nobody))))
+    (is (= #{3} (set (search/ids (search/remove idx 1 2)))) "several at once")
+    (is (= idx (search/add idx) (search/remove idx)) "none")
+    (let [idx (search/index [{:id 1 :fields {:title "old"}}
+                             {:id 1 :fields {:title "new"}}])]
+      (is (= [1] (mapv :id (search/query idx "new "))))
+      (is (= [] (search/query idx "old ")) "the last of one id in a call")))
   (testing "fields and queries given as terms are taken as is"
     (let [idx (search/index [{:id :a :fields {:body ["kaffe" "te"]}}])]
       (is (= [:a] (mapv :id (search/query idx ["kaffe"]))))
@@ -90,12 +100,20 @@
       (is (= [1 2] (mapv :id (search/query thawed "cloj")))
           "its arrays come back as vectors, which a query makes arrays")
       (is (= idx (search/restore thawed)))
-      (is (= [1 2] (mapv :id (search/query (search/restore thawed) "cloj"))))))
+      (is (= (hash idx) (hash (search/restore thawed))) "and hashes the same")
+      (is (= [1 2] (mapv :id (search/query (search/restore thawed) "cloj"))))
+      (let [changed (search/add thawed {:id 4 :fields {:title "Haskell"}})]
+        (is (= [4] (mapv :id (search/query changed "haskell")))
+            "a change to it needs no restore"))))
   (testing "every kind of white space is one, on both platforms"
     (is (= [2] (ids "value\u00A0for\u3000value"))
         "no-break and ideographic spaces"))
   (is (thrown? #?(:clj Exception :cljs js/Error)
-               (search/add idx {:fields {:title "no id"}}))))
+               (search/add idx {:fields {:title "no id"}})))
+  (is (thrown? #?(:clj Exception :cljs js/Error)
+               (search/index [{:id 1 :fields (zipmap (range 2148) (repeat "x"))}]))
+      "more than 2147 fields, whose positions don't fit in an int")
+  (is (= [] (search/query (search/index) "clojure")) "an empty index"))
 
 (deftest an-index-that-changes
   (let [doc     (fn [i]
@@ -116,6 +134,19 @@
     (is (contains? (ids (search/add changed (doc 6))) 6)
         "a removed document added again")))
 
+(deftest segments
+  (let [doc (fn [i] {:id i :fields {:title (str "word w" i)}})
+        idx (search/index (map doc (range 10)))]
+    (is (= (search/index (map doc (range 6 10)))
+           (search/remove idx 0 1 2 3 4 5))
+        "a segment of more removed documents than others is written again")
+    (is (= idx (search/remove (search/add idx (doc 10)) 10))
+        "and one that holds no others is left out")
+    (let [big (search/index (map doc (range 4100)))]
+      (is (= 1 (count (:segments big)))
+          "the segments of more than 4096 documents merged into one")
+      (is (= [0 4099] (sort (map :id (search/query big "w0 | w4099 "))))))))
+
 (defn- error-type
   "The :type of what `f` throws, or nil."
   [f]
@@ -135,6 +166,30 @@
   [body n]
   #?(:clj  (java.util.Arrays/copyOf ^bytes body (- (alength ^bytes body) n))
      :cljs (.slice body 0 (- (.-length body) n))))
+
+(defn- size
+  [body]
+  #?(:clj  (alength ^bytes body)
+     :cljs (.-length body)))
+
+(defn- flipped
+  "The bytes `body` with the bits of the one at `i` flipped."
+  [body i]
+  #?(:clj  (doto (aclone ^bytes body)
+             (aset-byte i (unchecked-byte (bit-xor 0xFF (aget ^bytes body i)))))
+     :cljs (doto (.slice body)
+             (aset i (bit-xor 0xFF (aget body i))))))
+
+(defn- read-outcome
+  "What reading the `files` gives: :read for an index that answers a query,
+  or else the :type of what is thrown, which is nil for an error of the
+  platform."
+  [files]
+  (try
+    (search/query (ciff/read-files files) "clojure value~ | \"a talk\"")
+    :read
+    (catch #?(:clj Exception :cljs :default) e
+      (:type (ex-data e)))))
 
 (deftest an-index-in-a-store
   (let [store (atom {})
@@ -185,6 +240,26 @@
         (is (= ::ciff/malformed
                (read-of [manifest {:name name :body (cut body 10)}]))
             "a segment cut short")
+        (is (every? #(= ::ciff/malformed
+                        (read-of [manifest {:name name :body (cut body %)}]))
+                    (range 1 (inc (size body))))
+            "anywhere")
+        (is (every? #{:read ::ciff/malformed ::ciff/newer-format}
+                    (for [i (range (size body))]
+                      (read-outcome [manifest
+                                     {:name name :body (flipped body i)}])))
+            "a wrong byte anywhere, which still reads or throws one of these")
+        (let [edited #(read-of [(update manifest :body
+                                        (comp pr-str % edn/read-string))
+                                {:name name :body body}])]
+          (is (= ::ciff/malformed
+                 (edited #(update % :segments into (:segments %))))
+              "a segment listed twice")
+          (is (= ::ciff/malformed (edited #(assoc % :fields {})))
+              "a segment of fields that the index doesn't have")
+          (is (= ::ciff/malformed
+                 (edited #(assoc-in % [:segments 0 :deleted] #{99})))
+              "a removed document that the segment doesn't have"))
         (is (= ::ciff/malformed
                (read-of [manifest
                          {:name name
@@ -203,9 +278,18 @@
   (is (= [1] (ids "clojure !\"value for value\"")))
   (is (= [2] (ids "(rust | gardening) -tomatoes")))
   (is (= [] (ids "-clojure")) "only exclusions find nothing")
+  (is (= [] (ids "-clojure -rust")))
+  (is (= [] (ids "-clojure | -rust")) "in any kind of group")
+  (is (= [1 2] (ids "clojure (value | tomatoes)")) "a group among words")
+  (is (= [1] (ids "data (clojure -rust)")))
+  (is (= [] (ids "clojure tomatoes value -rust")) "nothing left to narrow")
+  (is (= #{2 3} (set (ids {:or [{:term "rust"} {:term "tomatoes"}]})))
+      "a query as data")
   (is (= [1] (ids "title:clojure")))
   (is (= [2] (ids "description:clojure")))
   (is (= #{2 3} (set (ids "title:(rust | gardening)"))))
+  (is (= [1] (ids "title:\"value of\"")))
+  (is (= [] (ids "description:\"value of\"")) "a phrase in a field")
   (is (= [2] (ids "description:clojure" {:boosts {:description 0}}))
       "a field that a query names counts although its boost is 0")
   (let [idx (search/index docs {:aliases {"notes" :description}})]
@@ -227,7 +311,10 @@
     (testing "a field holds any value, whose text counts"
       (let [idx (search/index [{:id 1 :fields {:year 2024 :tags #{:clojure :data}}}])]
         (is (= [1] (mapv :id (search/query idx "2024 "))))
-        (is (= [1] (mapv :id (search/query idx "tags:clojure "))))))
+        (is (= [1] (mapv :id (search/query idx "tags:clojure ")))))
+      (let [idx (search/index [{:id 1 :fields {"title" "Clojure"}}])]
+        (is (= [1] (mapv :id (search/query idx "title:clojure ")))
+            "in a field named by a string")))
     (testing "the next page"
       (let [idx  (search/index (for [i (range 25)]
                                  {:id i :fields {:title "same words"}}))
@@ -252,7 +339,30 @@
                 (some #(when (= id (:id %)) (:score %))
                       (search/query idx "cloj")))]
     (is (= (score 1) (score 6))
-        "a prefix counts as one term, so the rarest completion doesn't win")))
+        "a prefix counts as one term, so the rarest completion doesn't win"))
+  (let [idx   (search/index [{:id 1 :fields {:title "clojure value"}}
+                             {:id 2 :fields {:title "clojure closure"}}
+                             {:id 3 :fields {:title "clojure lisp"}}])
+        score (fn [q id]
+                (some #(when (= id (:id %)) (:score %)) (search/query idx q)))]
+    (is (close? (+ (score "clojure " 1) (score "value " 1))
+                (score "clojure | value " 1))
+        "the scores of the parts of an :or add up")
+    (is (close? (score "clojure~ " 3) (score "clojure~ " 2))
+        "a word with typos counts its best match in a document, not each"))
+  (let [idx   (search/index [{:id 1 :fields {:title "x"}}
+                             {:id 2 :fields {:title "x y z"}}
+                             {:id 3 :fields {:title "y"}}
+                             {:id 4 :fields {:title "y"}}])
+        found #(mapv :id (search/query idx %1 %2))
+        score (fn [q id opts]
+                (some #(when (= id (:id %)) (:score %))
+                      (search/query idx q opts)))]
+    (is (= [1 2] (found "x " {})) "a match in a shorter field counts more")
+    (is (close? (score "x " 1 {:b 0}) (score "x " 2 {:b 0}))
+        "unless :b is 0")
+    (is (> (score "x | y " 1 {}) (score "x | y " 3 {}))
+        "a rarer word counts more")))
 
 (deftest typos
   (let [idx (search/index [{:id 1 :fields {:title "Clojure and the value of simplicity"}}
@@ -338,7 +448,19 @@
                                     {:limit #?(:clj  Long/MAX_VALUE
                                                :cljs js/Number.MAX_SAFE_INTEGER)}))))
     (is (= (range 150) (mapv :id (search/query idx "same" {:limit 150})))
-        "a limit near the count sorts all"))
+        "a limit near the count sorts all")
+    (is (= [] (search/query idx "same" {:limit 0})))
+    (is (= (range 100 110)
+           (mapv :id (search/query idx "same" {:limit       10
+                                              :filter-pred #(<= 100 (:id %))})))
+        "a filter reads more of the best when too few of them pass")
+    (is (= [4 6 8]
+           (mapv :id (search/query idx "same" {:limit       3
+                                              :offset      2
+                                              :filter-pred #(even? (:id %))}))))
+    (is (= [199 198]
+           (mapv :id (search/query idx "same" {:limit   2
+                                              :rank-fn #(- (:id %))})))))
   (let [idx (search/index (for [id ["b" :a "c" "a" :b 10 2.5]]
                             {:id id :fields {:title "same words"}}))]
     (is (= [2.5 10 :a "b" "c" "a" :b] (mapv :id (search/query idx "same")))

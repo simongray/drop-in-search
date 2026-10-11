@@ -62,7 +62,8 @@
   (is (= [{:term "ガ" :start 0 :end 2 :position 0}] (analysis/spans "ｶﾞ"))
       "a character with its sound mark")
   (testing "the terms of spans are those of tokens"
-    (doseq [s ["Podcasting 2.0: the era!" "爸爸不在家的中秋节 - A Mid" "ｶﾞｷﾞ 학교 ภาษา"]]
+    (doseq [s ["Podcasting 2.0: the era!" "爸爸不在家的中秋节 - A Mid" "ｶﾞｷﾞ 학교 ภาษา"
+               "AIメモリ管理 ok" "❤️ ok"]]
       (is (= (flatten (analysis/tokens s)) (map :term (analysis/spans s))) s))))
 
 (deftest unspaced

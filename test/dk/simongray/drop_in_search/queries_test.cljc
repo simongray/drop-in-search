@@ -41,6 +41,8 @@
       (is (= {:term "a"} (parse "a OR ")))
       (is (= {:term "a"} (parse ") a (")))
       (is (= {:term "a"} (parse "AND a ")))
+      (is (= {:term "clojure"} (parse "title: clojure "))
+          "a field with no word right after it")
       (is (nil? (parse ""))))
     (testing "the spellings and the operator between words are options"
       (is (= {:and [{:term "x"} {:term "y"}]}
@@ -134,4 +136,7 @@
       "the window that shows the most of the query wins")
   (is (= [{:text "今天"} {:text "天气很好" :match? true} {:text " good"}]
          (queries/snippet "今天天气很好 good" "天气很好"))
-      "the pairs of characters are one match"))
+      "the pairs of characters are one match")
+  (is (= [{:text "爸爸不在家的"} {:text "中秋节" :match? true}]
+         (queries/snippet "爸爸不在家的中秋节" "中秋 秋节 "))
+      "and so are matches that overlap"))
