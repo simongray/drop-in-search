@@ -308,6 +308,28 @@
              (queries/snippet "a Clojure"
                             "notes:clojure"
                             (search/query-opts idx {:width 20})))))
+    (testing "and snippet and matches? take the index itself"
+      (is (= [{:text "a "} {:text "Clojure" :match? true}]
+             (search/snippet idx "a Clojure" "notes:clojure")))
+      (is (= [{:text "a Clojure"}]
+             (search/snippet idx "a Clojure" "notes:clojure" {:field :title}))
+          "but mark only the words for the field of the text")
+      (is (= [{:text "a "} {:text "Clojure" :match? true}]
+             (search/snippet idx "a Clojure" "notes:clojure" {:field :description})))
+      (is (search/matches? idx "a Clojure" "notes:clojure"))
+      (is (not (search/matches? idx "a Clojure" "notes:clojure" {:field :title})))
+      (is (search/matches? idx "a Clojure" "clojure" {:field :title})
+          "a word for no field in particular"))
+    (testing "the size, and a document by its id"
+      (is (= 3 (search/size idx)))
+      (is (= {:id 1 :stored {:title "Clojure…"}} (search/document idx 1)))
+      (is (= {:id 2 :stored nil} (search/document idx 2)) "one with nothing stored")
+      (is (nil? (search/document idx 4)))
+      (is (= {:id 1 :stored {:title "Clojure…"}}
+             (search/document (edn/read-string (pr-str idx)) 1))
+          "of an index read back from EDN")
+      (is (= 0 (search/size (search/index))))
+      (is (= () (search/ids (search/index))) "no ids, rather than nil"))
     (testing "a field holds any value, whose text counts"
       (let [idx (search/index [{:id 1 :fields {:year 2024 :tags #{:clojure :data}}}])]
         (is (= [1] (mapv :id (search/query idx "2024 "))))
@@ -323,6 +345,20 @@
         (is (= (range 20 25) (page 20)))
         (is (= [] (page 30)))
         (is (= (range 5 25) (mapv :id (search/query idx "same" {:offset 5}))))))))
+
+(deftest unknown-options
+  (let [bad? #(= :dk.simongray.drop-in-search/bad-options
+                 (try (%) nil
+                      (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+                        (:type (ex-data e)))))]
+    (is (bad? #(search/query idx "clojure" {:limt 10})) "a typo")
+    (is (bad? #(search/index docs {:boost {:title 3}})))
+    (is (bad? #(search/snippet idx "a Clojure" "clojure" {:feild :title})))
+    (is (bad? #(queries/parse "clojure" {:operater :or})))
+    (is (bad? #(ciff/read-files [] {:term-f identity})))
+    (is (bad? #(search/query idx "clojure" nil)) "nor anything but a map")
+    (is (= [1 2] (mapv :id (search/query idx "clojure" (search/query-opts idx {:limit 5}))))
+        "but every option of one function goes to another")))
 
 (deftest bm25f
   (let [idx   (search/index [{:id 1 :fields {:a "x y" :b "x y" :c "x y"}}

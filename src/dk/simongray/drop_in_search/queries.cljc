@@ -41,6 +41,28 @@
   {:max-terms 32
    :max-depth 32})
 
+(def option-keys
+  "The options of the functions of the library, one set for them all, so
+  that the same map can go to each."
+  #{:aliases :syntax :operator :prefix? :min-prefix :max-terms :max-depth
+    :term-fn :fuzzy :typo-lengths :known-pred :width :field :limit :offset
+    :boosts :fields :k1 :b :filter-pred :rank-fn :max-completions
+    :max-expansions})
+
+(defn ^:no-doc checked
+  "The `opts` as they are, or a throw when they aren't a map, or hold an
+  option that isn't one of option-keys, e.g. :limt for :limit."
+  [opts]
+  (when-not (map? opts)
+    (throw (ex-info "The options are not a map"
+                    {:type    :dk.simongray.drop-in-search/bad-options
+                     :options opts})))
+  (when-let [unknown (seq (remove option-keys (keys opts)))]
+    (throw (ex-info (str "Unknown options: " (str/join ", " unknown))
+                    {:type    :dk.simongray.drop-in-search/bad-options
+                     :options (set unknown)})))
+  opts)
+
 (defn ^:no-doc spaced
   "The query `q` with every kind of whitespace as a space, since the regex
   \\s matches only ASCII whitespace on the JVM but all of it in JavaScript."
@@ -408,7 +430,7 @@
   ([q]
    (parse q {}))
   ([q opts]
-   {:pre [(map? opts)]}
+   (checked opts)
    (let [{:keys [aliases operator prefix? min-prefix max-terms max-depth
                  term-fn]
           :or   {operator :and prefix? true min-prefix 1}}
@@ -618,6 +640,14 @@
                                  leaves))]
     (persistent! (reduce add-hits (transient []) spans))))
 
+(defn- in-field?
+  "Whether the term or phrase `leaf` can match the text of `field`: it
+  names no field, or that one, or there's no `field`."
+  [field leaf]
+  (or (nil? field)
+      (nil? (:field leaf))
+      (= field (:field leaf))))
+
 (defn- merged
   "The `hits`, maps of :start and :end in order, with those that overlap
   or touch made one, e.g. the pairs of characters of a run of Chinese."
@@ -703,15 +733,17 @@
     by default, as Elasticsearch's AUTO
   - :known-pred, a predicate of a term of a query, e.g.
     {:term \"clojure\"}, that tells whether the documents of an index
-    hold it; without it, no word is unknown"
+    hold it; without it, no word is unknown
+  - :field, the field of a document that the text is from, so that only
+    the words of the query in that field or in none match"
   ([text q]
    (snippet text q {}))
-  ([text q {:keys [width term-fn] :or {width 160} :as opts}]
-   {:pre [(map? opts)]}
+  ([text q {:keys [width term-fn field] :or {width 160} :as opts}]
+   (checked opts)
    (let [text       (analysis/text text)
          spans      (analysis/mapped-spans term-fn (analysis/spans text))
          query      (fuzzy-query q opts)
-         found      (hits spans (leaves query))
+         found      (hits spans (filterv #(in-field? field %) (leaves query)))
          length     (count text)
          [from to]  (:window (window spans found width length))
          inside     (filter #(and (<= from (:start %)) (<= (:end %) to))
@@ -751,11 +783,11 @@
 
 (defn matches?
   "Whether `text` matches the query `q`, read with the `opts` of snippet,
-  as one field of a document would."
+  as one field of a document would, its :field if it's given."
   ([text q]
    (matches? text q {}))
-  ([text q {:keys [term-fn] :as opts}]
-   {:pre [(map? opts)]}
+  ([text q {:keys [term-fn field] :as opts}]
+   (checked opts)
    (let [text   (analysis/text text)
          terms  (delay (into #{}
                              (mapcat #(if (vector? %) % [%]))
@@ -763,6 +795,9 @@
          spans  (delay (analysis/mapped-spans term-fn (analysis/spans text)))
          found? (fn [{:keys [term phrase prefix?] :as leaf}]
                   (cond
+                    (not (in-field? field leaf))
+                    false
+
                     phrase
                     (boolean (seq (hits @spans [leaf])))
 

@@ -39,7 +39,7 @@ from [Clojars](https://clojars.org/dk.simongray/drop-in-search) to the
 `:deps` in your `deps.edn`:
 
 ```clojure
-dk.simongray/drop-in-search {:mvn/version "0.1.1"}
+dk.simongray/drop-in-search {:mvn/version "0.2.0"}
 ```
 
 For changes that aren't released yet, use the SHA of the latest commit on
@@ -103,22 +103,24 @@ result lists them under `:typos`:
 The index is a value, and nothing runs in the background. When a post
 changes, `(search/add idx (document post))` gives an index with the new
 version of it, and `(search/remove idx "values")` gives one without the
-post.
+post. The number of documents is `(search/size idx)`, and
+`(search/document idx "values")` gives one by its id, with what's
+stored.
 
-To show where a result matches, `snippet` cuts a window of the text
-around the matches. Give it `(search/query-opts idx)`, so that it reads
-the query as `search/query` does:
+To show where a result matches, `search/snippet` cuts a window of the
+text around the matches, and reads the query as `search/query` does:
 
 ```clojure
-(require '[dk.simongray.drop-in-search.queries :as search.queries])
-
-(search.queries/snippet (:body (second posts))
-                        "clojure"
-                        (search/query-opts idx))
+(search/snippet idx (:body (second posts)) "clojure")
 ;; => [{:text "Rust's ownership rules, seen by someone who mostly writes "}
 ;;     {:text "Clojure" :match? true}
 ;;     {:text "."}]
 ```
+
+For a query that names a field, e.g. `title:clojure`, give the field
+that the text is from as `:field`, so that only the words for that
+field are marked. To tell whether a text matches a query at all, use
+`search/matches?`.
 
 Options
 -------
@@ -129,7 +131,9 @@ of results. The page has the `:total` of the matches in its metadata, for
 "1 to 10 of 243", unless a `:filter-pred` filled the page before it read
 them all. The options of `search/index` are the defaults of every
 query of that index, e.g. the `:boosts` above. The docstrings of
-`search/query` and `search.queries/parse` list them all.
+`search/query` and `search.queries/parse` list them all. Every function
+takes the same set of options, so you can pass one map to each, and an
+option outside it, e.g. `:limt` for `:limit`, throws.
 
 The library doesn't stem, but you can bring your own
 [stemmer](https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html)
@@ -182,6 +186,17 @@ of the files to delete. A segment's file is named after what it holds, so
 a change only adds the segments that are new. You can keep the files in a
 folder, in IndexedDB or anywhere else, and `ciff/read-files` reads them
 back.
+
+Switch to CIFF once reading the EDN back takes too long. For 20,000
+posts of 120 words, measured on an Apple M1 with JDK 24 and Node 24 on
+12 October 2026:
+
+| | Size | Write | Read |
+|---|---|---|---|
+| EDN on the JVM | 45 MB | 0.6 s | 1.9 s |
+| CIFF on the JVM | 19 MB | 0.2 s | 0.2 s |
+| EDN in Node | 44 MB | 2.2 s | 5.3 s |
+| CIFF in Node | 18 MB | 0.7 s | 0.5 s |
 
 Principles
 ----------

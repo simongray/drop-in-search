@@ -39,13 +39,16 @@
   to index and to look for in its place, e.g. a stemmer's, so that posts
   finds post. The other `opts` print with the index, so they must be data,
   but a function can't, so give the :term-fn to restore and
-  ciff/read-files again."
+  ciff/read-files again.
+
+  The options of every function are one set, search.queries/option-keys,
+  and an option outside it throws, e.g. :limt for :limit."
   ([]
    {:segments [] :docs {} :fields {}})
   ([docs]
    (index docs {}))
   ([docs {:keys [term-fn] :as opts}]
-   {:pre [(map? opts)]}
+   (search.queries/checked opts)
    (let [defaults (dissoc opts :term-fn)]
      (cond-> (-> (index)
                  (indexing/with-term-fn term-fn)
@@ -60,6 +63,7 @@
   ([index]
    (restore index {}))
   ([index {:keys [term-fn] :as opts}]
+   (search.queries/checked opts)
    (some-> index
            (update :segments (partial mapv #(if (instance? Segment %)
                                               %
@@ -90,7 +94,23 @@
 (defn ids
   "The ids of the documents in `index`."
   [index]
-  (keys (:docs index)))
+  (or (keys (:docs index)) ()))
+
+(defn size
+  "The number of documents in `index`."
+  [index]
+  (count (:docs index)))
+
+(defn document
+  "The document `id` of `index` as a map of its :id and :stored, as a
+  result of query has them, or nil when the index has none of that id."
+  [index id]
+  (when-let [[i no] (get (:docs index) id)]
+    (let [segment (nth (:segments index) i)
+          stored  (if (instance? Segment segment)
+                    (.-stored ^Segment segment)
+                    (:stored segment))]
+      {:id id :stored (nth stored no)})))
 
 ;; Xapian takes the 100 most frequent completions of a prefix, and Lucene's
 ;; FuzzyQuery the 50 closest terms to a word with typos
@@ -119,7 +139,7 @@
    (query-opts index {}))
   ([index opts]
    (let [{:keys [defaults fields segments] :as index} (restore index)
-         opts  (merge defaults opts)
+         opts  (merge defaults (search.queries/checked opts))
          names (into {} (for [field (keys fields)]
                           [(name-of field) field]))]
      (cond-> (assoc opts
@@ -190,7 +210,7 @@
   ([index q]
    (query index q {}))
   ([index q opts]
-   {:pre [(map? opts)]}
+   (search.queries/checked opts)
    (let [index  (restore index)
          {:keys [limit offset] :or {offset 0} :as opts}
          (merge default-limits (:defaults index) opts)
@@ -216,6 +236,25 @@
      (cond-> page
        (seq typos) (->> (mapv #(terms/with-typos index typos %)))
        (seq facts) (with-meta facts)))))
+
+(defn snippet
+  "A window of `text` around the words that match the query `q`, read as
+  `index` reads it, with the `opts` of search.queries/snippet over the
+  defaults of the index, e.g. :field for the field that the text is from.
+
+      (snippet idx (:notes post) \"notes:clojure\" {:field :notes})"
+  ([index text q]
+   (snippet index text q {}))
+  ([index text q opts]
+   (search.queries/snippet text q (query-opts index opts))))
+
+(defn matches?
+  "Whether `text` matches the query `q`, read as `index` reads it, with the
+  `opts` of search.queries/matches? over the defaults of the index."
+  ([index text q]
+   (matches? index text q {}))
+  ([index text q opts]
+   (search.queries/matches? text q (query-opts index opts))))
 
 (comment
   (def idx

@@ -10,6 +10,7 @@
   (:require #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as edn])
             [dk.simongray.drop-in-search :as search]
             [dk.simongray.drop-in-search.indexing :as indexing]
+            [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
   #?(:clj (:import [dk.simongray.drop_in_search.segment Segment]
@@ -784,5 +785,5 @@
   ([fetched]
    (read-files fetched {}))
   ([fetched opts]
-   {:pre [(map? opts)]}
+   (search.queries/checked opts)
    (indexing/with-term-fn (read-index fetched) (:term-fn opts))))
