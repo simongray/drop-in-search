@@ -8,20 +8,17 @@
   as they are. The text of an instant is its date and time in UTC, e.g.
   2024-03-01 09:30:00, and that of anything else is what str gives.
 
-  Most of the code behind these functions is in these namespaces:
+  Most of the code behind these functions is in these namespaces under
+  dk.simongray.drop-in-search:
 
-  - [[dk.simongray.drop-in-search.indexing]]: adding and removing
-    documents
-  - [[dk.simongray.drop-in-search.queries]]: the query language
-  - [[dk.simongray.drop-in-search.terms]]: the terms that the words of a
-    query stand for
-  - [[dk.simongray.drop-in-search.matching]]: the documents that match a
-    query
-  - [[dk.simongray.drop-in-search.scoring]]: the BM25F score of a
-    document that matches
-  - [[dk.simongray.drop-in-search.hits]]: the documents that match in a
-    segment, and their scores, as arrays
-  - [[dk.simongray.drop-in-search.ranking]]: the order of the results"
+    indexing: adding and removing documents
+     queries: the query language
+       terms: the terms that the words of a query stand for
+    matching: the documents that match a query
+     scoring: the BM25F score of a document that matches
+     ranking: the order of the results
+        hits: the documents that match in a segment, and their scores,
+              as arrays"
   (:refer-clojure :exclude [remove])
   (:require [dk.simongray.drop-in-search.indexing :as indexing]
             [dk.simongray.drop-in-search.matching :as matching]
