@@ -46,17 +46,31 @@ const browser = spawn(chrome, [
   ...(process.env.CI ? ['--no-sandbox'] : []),
   'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
 
+// What went wrong, from the first failure on. On GitHub Actions it's an
+// annotation too, which the summary of a run shows without a sign-in.
+const report = [];
+const complain = text => {
+  console.error(text);
+  report.push(text);
+};
+const escaped = text =>
+  text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+
 let finished = false;
 const finish = async code => {
   if (finished) return;
   finished = true;
+  if (code && process.env.GITHUB_ACTIONS && report.length) {
+    const text = escaped(report.slice(0, 200).join('\n'));
+    console.log(`::error title=Browser tests::${text}`);
+  }
   browser.kill();
   server.close();
   await fs.rm(profile, { recursive: true, force: true }).catch(() => {});
   process.exit(code);
 };
 setTimeout(() => {
-  console.error(`No count of failures within ${minutes} minutes`);
+  complain(`No count of failures within ${minutes} minutes`);
   finish(1);
 }, minutes * 60000).unref();
 
@@ -88,12 +102,15 @@ socket.addEventListener('message', ({ data }) => {
   if (method === 'Runtime.consoleAPICalled') {
     const line = params.args.map(a => a.value ?? a.description ?? '').join(' ');
     console.log(line);
+    if (report.length || /^(FAIL|ERROR) in /.test(line.trim())) {
+      report.push(line);
+    }
     started ||= line.startsWith('Testing ');
     const counts = line.match(/(\d+) failures, (\d+) errors\./);
     if (counts) finish(counts[1] === '0' && counts[2] === '0' ? 0 : 1);
   } else if (method === 'Runtime.exceptionThrown') {
-    console.error(params.exceptionDetails.exception?.description
-                  ?? params.exceptionDetails.text);
+    complain(params.exceptionDetails.exception?.description
+             ?? params.exceptionDetails.text);
     if (!started) finish(1);
   }
 });
@@ -101,7 +118,7 @@ send('Runtime.enable');
 send('Page.navigate', { url: page });
 setTimeout(() => {
   if (!started) {
-    console.error(`No test started within a minute at ${page}`);
+    complain(`No test started within a minute at ${page}`);
     finish(1);
   }
 }, 60000).unref();
