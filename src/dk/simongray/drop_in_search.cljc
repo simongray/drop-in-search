@@ -116,14 +116,16 @@
 ;; FuzzyQuery the 50 closest terms to a word with typos
 (def default-limits
   "The limits that keep the cost of a query that anyone can type within
-  bounds, when its options don't set them:
+  bounds, when its options don't set them: those of search.queries/parse,
+  and these.
 
   - :max-completions, the terms that a prefix stands for, those of the
     most documents, as in Xapian
   - :max-expansions, the terms that a word with typos stands for, the
     closest, as in Lucene's FuzzyQuery"
-  {:max-completions 100
-   :max-expansions  50})
+  (merge search.queries/default-limits
+         {:max-completions 100
+          :max-expansions  50}))
 
 (defn- name-of
   [field]

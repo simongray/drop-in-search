@@ -231,6 +231,21 @@ Principles
 - **One codebase.** The library is written in `.cljc`, with no
   dependencies but Clojure.
 
+Versions
+--------
+
+Until 1.0, a release that changes the API gets a new minor version, e.g.
+from 0.4.2 to 0.5.0, and one that only fixes gets a new patch version,
+e.g. from 0.4.2 to 0.4.3. A function that's renamed or removed goes
+without a deprecated alias, and the commit of each release says what
+changed. The tests run in CI on Java 11 and 25, in Node and in a
+headless Chrome.
+
+A CIFF index records the version of its format, and `ciff/read-files`
+throws with the `:type` `:dk.simongray.drop-in-search.ciff/newer-format`
+for one that's newer than it reads. The EDN of an index has no version,
+so index the documents again after a release that changes its shape.
+
 Development
 -----------
 

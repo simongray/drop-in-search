@@ -503,8 +503,8 @@
       (is (= 50 (count (search/query idx "px"))))
       (is (= (range 5) (map :id (search/query idx "px" {:max-completions 1}))))
       (is (= 1 (count (search/query idx "px1~ " {:max-expansions 1}))))))
-  (testing "the limits are data"
-    (is (= #{:max-completions :max-expansions}
+  (testing "the limits are data, those of parse too"
+    (is (= #{:max-completions :max-expansions :max-terms :max-depth}
            (set (keys search/default-limits))))
     (is (= [1 2] (ids "clojure tomatoes" {:max-terms 1}))
         "and those of parse count in a query too")))
