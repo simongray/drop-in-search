@@ -1,6 +1,12 @@
 {:deps   {:aliases [:cljs]}
  :builds {;; clojure -M:cljs compile test
-          :test {:target    :node-test
-                 :output-to "target/node-tests.js"
-                 :ns-regexp "-test$"
-                 :autorun   true}}}
+          :test         {:target    :node-test
+                         :output-to "target/node-tests.js"
+                         :ns-regexp "-test$"
+                         :autorun   true}
+          ;; clojure -M:cljs compile browser-test, then
+          ;; node test/browser-run.mjs target/browser-test
+          :browser-test {:target    :browser-test
+                         :test-dir  "target/browser-test"
+                         :ns-regexp "-test$"
+                         :runner-ns dk.simongray.drop-in-search.browser-runner}}}

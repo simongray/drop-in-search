@@ -50,6 +50,13 @@ jobs:
           clojure -M:cljs release test --config-merge '{:autorun false}'
           node target/node-tests.js
 
+      # The runner of the build prints the report on the console, which the
+      # script reads from a headless Chrome, the one that the runner has.
+      - name: Browser tests, in a headless Chrome
+        run: |
+          clojure -M:cljs compile browser-test
+          node test/browser-run.mjs target/browser-test
+
       - name: Lint
         run: clojure -Sdeps '{:deps {clj-kondo/clj-kondo {:mvn/version "2026.08.04"}}}' -M -m clj-kondo.main --lint src test
 

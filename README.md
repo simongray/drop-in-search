@@ -235,9 +235,11 @@ Development
 -----------
 
 ```bash
-clojure -X:test               # the tests on the JVM
-npm install                   # once, for the Node tests
-clojure -M:cljs compile test  # the tests in Node
+clojure -X:test                       # the tests on the JVM
+npm install                           # once, for ClojureScript
+clojure -M:cljs compile test          # the tests in Node
+clojure -M:cljs compile browser-test  # the tests in a browser
+node test/browser-run.mjs             # run them in a headless Chrome
 ```
 
 License
