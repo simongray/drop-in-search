@@ -121,8 +121,9 @@
   "The document `id` of `index` as a map of its :id and :stored, as a
   result of query has them, or nil when the index has none of that id."
   [index id]
-  (when-let [[i no] (get (:docs index) id)]
-    (let [segment (nth (:segments index) i)
+  (when-let [p (get (:docs index) id)]
+    (let [[i no]  (indexing/place-parts p)
+          segment (nth (:segments index) i)
           stored  (if (instance? Segment segment)
                     (.-stored ^Segment segment)
                     (:stored segment))]

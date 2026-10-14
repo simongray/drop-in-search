@@ -59,13 +59,6 @@
                bs))
     x))
 
-(defn- as-objects
-  "The values `xs`, a vector or an array, as an array."
-  [xs]
-  (if (vector? xs)
-    (to-array xs)
-    xs))
-
 (defn- as-vector
   "The values of the array `arr` as a vector."
   [arr]
@@ -117,35 +110,15 @@
         (recur hi (* 2 step))
         (lower-bound arr lo (min hi to) x)))))
 
-(defn ^:no-doc term-bound
-  "The first index of the sorted array `terms` whose term is at least
-  `term`, or the count of `terms`."
-  ^long [terms term]
-  (let [^objects terms terms]
-    (loop [lo 0 hi (alength terms)]
-      (if (< lo hi)
-        (let [mid (quot (+ lo hi) 2)]
-          (if (neg? (compare (aget terms mid) term))
-            (recur (inc mid) hi)
-            (recur lo mid)))
-        lo))))
-
-(defn ^:no-doc term-number
-  "The index of `term` in the sorted array `terms`, or -1."
-  ^long [terms term]
-  (let [^objects terms terms
-        i              (term-bound terms term)]
-    (if (and (< i (alength terms))
-             (= term (aget terms i)))
-      i
-      -1)))
-
 ;; A segment holds the postings of some of the documents of an index in
 ;; arrays, which take far less memory than maps:
 ;;
 ;; - ids and stored, those of each document by its number
-;; - terms, in order, and doc-start, where the postings of each start in
-;;   the count of them all, with the end of the last
+;; - term-text, its terms in order one after the other, which take far
+;;   less memory than a string each, and text-start, where each starts
+;;   there, with the end of the last
+;; - doc-start, where the postings of each term start in the count of them
+;;   all, with the end of the last
 ;; - postings, those of each term in bytes, as the postings namespace has
 ;;   them, and term-start, where those of each term start, with the end
 ;;   of the last
@@ -160,9 +133,9 @@
 ;;   another of
 (declare contents segment-data)
 
-(deftype Segment [ids stored terms doc-start term-start postings lengths
-                  ^long width field-stats unpositioned positioned deleted
-                  name]
+(deftype Segment [ids stored term-text text-start doc-start term-start
+                  postings lengths ^long width field-stats unpositioned
+                  positioned deleted name]
   #?@(:clj
       [Object
        (equals [this other]
@@ -190,13 +163,14 @@
      [segment ^java.io.Writer writer]
      (print-method (segment-data segment) writer)))
 
-(defn- parts
+(defn ^:no-doc parts
   "The fields of `segment` as a map, with its :name as it is, a delay
   until something needs it."
   [^Segment segment]
   {:ids          (.-ids segment)
    :stored       (.-stored segment)
-   :terms        (.-terms segment)
+   :term-text    (.-term-text segment)
+   :text-start   (.-text-start segment)
    :doc-start    (.-doc-start segment)
    :term-start   (.-term-start segment)
    :postings     (.-postings segment)
@@ -214,7 +188,7 @@
           (-> (parts segment)
               (dissoc :name)
               (update :postings base64))
-          [:terms :doc-start :term-start :lengths]))
+          [:text-start :doc-start :term-start :lengths]))
 
 (defn ^:no-doc segment-name
   "The name of the file of `segment` in a store."
@@ -265,11 +239,13 @@
 (defn- content-name
   "The name of the file of a segment with the parts in `m`, from a hash of
   all that it holds, so that one that holds anything else has another."
-  [{:keys [ids stored terms doc-start term-start postings lengths
-           unpositioned]}]
-  (let [arrays [doc-start term-start lengths
-                (as-ints (mapv hash terms))
-                (as-ints [(hash ids) (hash stored) (hash unpositioned)])]
+  [{:keys [ids stored term-text text-start doc-start term-start postings
+           lengths unpositioned]}]
+  (let [arrays [text-start doc-start term-start lengths
+                (as-ints [(hash term-text)
+                          (hash ids)
+                          (hash stored)
+                          (hash unpositioned)])]
         lane   (fn [reversed?]
                  (fnv-bytes (reduce #(fnv-ints %1 %2 reversed?)
                                     2166136261
@@ -289,10 +265,11 @@
 
 (defn ^:no-doc segment-of
   "The segment of `m`, a map of its fields, whose arrays can be vectors
-  and its postings base64 text. Without a :name, its name is a hash of
-  what it holds, worked out once it's needed."
-  [{:keys [ids stored terms doc-start term-start postings lengths
-           field-stats unpositioned deleted name]
+  and its postings base64 text. Its terms are the strings of its :terms,
+  in order, or its :term-text and :text-start. Without a :name, its name
+  is a hash of what it holds, worked out once it's needed."
+  [{:keys [ids stored terms term-text text-start doc-start term-start
+           postings lengths field-stats unpositioned deleted name]
     :as   m}]
   (when-not postings
     (throw (ex-info (str "A segment has no postings, e.g. one printed by an"
@@ -300,7 +277,16 @@
                     {:keys (set (keys m))})))
   (let [arrays {:ids          (vec ids)
                 :stored       (vec stored)
-                :terms        (as-objects terms)
+                ;; V8 keeps a string that str joins as a tree of its parts,
+                ;; and one that join joins as one
+                :term-text    (if terms
+                                #?(:clj  (apply str terms)
+                                   :cljs (.join (into-array terms) ""))
+                                term-text)
+                :text-start   (as-ints (if terms
+                                         (vec (reductions + 0 (map count
+                                                                   terms)))
+                                         text-start))
                 :doc-start    (as-ints doc-start)
                 :term-start   (as-ints term-start)
                 :postings     (as-bytes postings)
@@ -308,7 +294,8 @@
                 :unpositioned (set unpositioned)}]
     (->Segment (:ids arrays)
                (:stored arrays)
-               (:terms arrays)
+               (:term-text arrays)
+               (:text-start arrays)
                (:doc-start arrays)
                (:term-start arrays)
                (:postings arrays)
@@ -330,11 +317,43 @@
   [^Segment segment]
   (- (size segment) (count (.-deleted segment))))
 
+(defn ^:no-doc term-count
+  "The number of terms of `segment`."
+  ^long [^Segment segment]
+  (dec (alength ^ints (.-text-start segment))))
+
+(defn ^:no-doc term-at
+  "The term numbered `t` of `segment`."
+  [^Segment segment t]
+  (let [^ints starts (.-text-start segment)]
+    (subs (.-term-text segment) (aget starts (int t)) (aget starts (inc t)))))
+
+(defn ^:no-doc term-bound
+  "The first number of a term of `segment` that is at least `term`, or the
+  number of its terms."
+  ^long [segment term]
+  (loop [lo 0 hi (term-count segment)]
+    (if (< lo hi)
+      (let [mid (quot (+ lo hi) 2)]
+        (if (neg? (compare (term-at segment mid) term))
+          (recur (inc mid) hi)
+          (recur lo mid)))
+      lo)))
+
+(defn ^:no-doc term-number
+  "The number of `term` in `segment`, or -1."
+  ^long [segment term]
+  (let [t (term-bound segment term)]
+    (if (and (< t (term-count segment))
+             (= term (term-at segment t)))
+      t
+      -1)))
+
 (defn ^:no-doc term-numbers
   "The numbers in `segment` of those of `terms` that it holds."
-  [^Segment segment terms]
+  [segment terms]
   (into []
-        (comp (map #(term-number (.-terms segment) %))
+        (comp (map #(term-number segment %))
               (remove neg?))
         terms))
 
@@ -494,16 +513,6 @@
                             entries)]
     (update-vals (persistent! postings) persistent!)))
 
-;; V8 keeps a substring of 13 characters or more as a slice of the string
-;; it's from, so a term would keep the whole text of the field it's from
-(defn- detached
-  "The term `s` as a string of its own."
-  [s]
-  #?(:clj  s
-     :cljs (if (and (string? s) (<= 13 (count s)))
-             (js/JSON.parse (js/JSON.stringify s))
-             s)))
-
 (defn- write-term!
   "Write the `postings` of a term with the writer `w`, a vector of the
   numbers of documents, each followed by its positions there, one or a
@@ -548,7 +557,7 @@
   positions."
   [numbers unpositioned entries]
   (let [postings         (postings-of numbers entries)
-        terms            (to-array (map detached (sort (keys postings))))
+        terms            (to-array (sort (keys postings)))
         n                (count entries)
         width            (count numbers)
         ^Out out         (postings/out)
@@ -638,10 +647,10 @@
   the index of the next term of each, or nil when none is left."
   [segments ^ints cursors]
   (reduce (fn [least i]
-            (let [^objects terms (.-terms ^Segment (nth segments i))
-                  c              (aget cursors i)]
-              (if (< c (alength terms))
-                (let [term (aget terms c)]
+            (let [segment (nth segments i)
+                  c       (aget cursors i)]
+              (if (< c (term-count segment))
+                (let [term (term-at segment c)]
                   (if (or (nil? least)
                           (neg? (compare term least)))
                     term
@@ -677,11 +686,10 @@
                                        (positioned-fields width unpositioned))
         ^ints cursors (make-ints (count segments))
         copy-term!    (fn [term k i]
-                        (let [^Segment segment (nth segments i)
-                              ^objects terms   (.-terms segment)
-                              c                (aget cursors i)]
-                          (if (and (< c (alength terms))
-                                   (= term (aget terms c)))
+                        (let [segment (nth segments i)
+                              c       (aget cursors i)]
+                          (if (and (< c (term-count segment))
+                                   (= term (term-at segment c)))
                             (do (aset cursors i (inc c))
                                 (+ (long k)
                                    (copy-postings! segment (nth new-numbers i)

@@ -8,15 +8,14 @@
   typos go under its :typos."
   (:require [clojure.string :as str]
             [dk.simongray.drop-in-search.hits :as hits]
+            [dk.simongray.drop-in-search.indexing :as indexing]
             [dk.simongray.drop-in-search.postings :as postings
              #?@(:cljs [:refer [Cursor]])]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.ranking :as ranking]
             [dk.simongray.drop-in-search.scoring :as scoring]
-            [dk.simongray.drop-in-search.segment :as segment
-             #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor]
-                   [dk.simongray.drop_in_search.segment Segment])))
+            [dk.simongray.drop-in-search.segment :as segment])
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor])))
 
 (def ^:no-doc fuzzy-weight
   "How much a match with typos weighs before its edits count, as the
@@ -26,18 +25,15 @@
 (defn- prefixed
   "The terms of `segment` that start with `prefix`, in order, as pairs of a
   term and the number of documents that hold it."
-  [^Segment segment prefix]
-  (let [^objects terms (.-terms segment)
-        ^ints starts   (.-doc-start segment)
-        n              (alength terms)]
-    (loop [i   (segment/term-bound terms prefix)
+  [segment prefix]
+  (let [n (segment/term-count segment)]
+    (loop [i   (segment/term-bound segment prefix)
            acc (transient [])]
-      (if (and (< i n)
-               (str/starts-with? (aget terms i) prefix))
-        (recur (inc i)
-               (conj! acc [(aget terms i)
-                           (- (aget starts (inc i)) (aget starts i))]))
-        (persistent! acc)))))
+      (let [term (when (< i n) (segment/term-at segment i))]
+        (if (and term (str/starts-with? term prefix))
+          (recur (inc i)
+                 (conj! acc [term (segment/doc-frequency segment i)]))
+          (persistent! acc))))))
 
 (defn- term-counts
   "The terms of the `segments` that start with `prefix`, as a map of each
@@ -90,13 +86,12 @@
   :prefix? a term that it starts."
   [segments {:keys [term prefix?]}]
   (boolean
-   (some (fn [^Segment segment]
-           (let [^objects terms (.-terms segment)
-                 i              (segment/term-bound terms term)]
-             (and (< i (alength terms))
+   (some (fn [segment]
+           (let [i (segment/term-bound segment term)]
+             (and (< i (segment/term-count segment))
                   (if prefix?
-                    (str/starts-with? (aget terms i) term)
-                    (= term (aget terms i))))))
+                    (str/starts-with? (segment/term-at segment i) term)
+                    (= term (segment/term-at segment i))))))
          segments)))
 
 (defn- distinct-docs
@@ -255,7 +250,7 @@
   `typos` that its document holds only with typos to the near terms that
   it holds, when there are any."
   [index typos {:keys [id] :as result}]
-  (let [[i d]   (get (:docs index) id)
+  (let [[i d]   (indexing/place-parts (get (:docs index) id))
         segment (nth (:segments index) i)
         holds?  #(holds-term? segment % d)
         held    (into {}

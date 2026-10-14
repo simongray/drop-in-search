@@ -178,12 +178,15 @@ query pass it, and mostly a byte for each number. For 152,006 podcast
 shows and episodes, with 23 million words in their fields, measured on
 an Apple M1 with JDK 24 and Node 24 on 14 October 2026:
 
-| | Heap | Postings | Build |
+| | Heap | Stored data | Build |
 |---|---|---|---|
-| JVM | 230 MB | 63 MB | 13 s |
-| Node | 506 MB | 63 MB | 37 s |
+| JVM | 209 MB | 78 MB | 13 s |
+| Node | 317 MB | 190 MB | 37 s |
 
-The rest of the heap holds the terms, the ids and the stored data.
+The postings take 63 MB of each, and the ids and the terms most of the
+rest. The stored data of six fields to a document takes the most in
+Node, so store only what a list of results shows, e.g. a title and an
+id to find the rest by.
 
 To save more, index long fields without the positions of their words,
 e.g. the notes of an episode, by giving `search/index` a set of them as

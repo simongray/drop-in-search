@@ -159,7 +159,7 @@
 ;;   14, packed, and the version of this format as field 15
 (defn- header-fields
   [^Segment segment]
-  (let [n-terms (alength ^objects (.-terms segment))
+  (let [n-terms (segment/term-count segment)
         n-docs  (segment/size segment)
         total   (areduce ^ints (.-lengths segment) i n 0
                          (+ n (aget ^ints (.-lengths segment) i)))]
@@ -335,7 +335,8 @@
   [^Segment segment]
   (binding [*print-length* nil
             *print-level*  nil]
-    (let [terms   (mapv utf8 (.-terms segment))
+    (let [terms   (mapv #(utf8 (segment/term-at segment %))
+                        (range (segment/term-count segment)))
           sizes   (mapv #(list-sizes (term-postings segment %) (terms %))
                         (range (count terms)))
           records (mapv #(doc-fields segment %)
@@ -687,7 +688,7 @@
             :else
             (do (skip! bs cursor end (rem t 8))
                 (recur term n doc packed unplaced))))
-        (let [tfs       (segment/slice tfs 0 n)
+        (let [^ints tfs (segment/slice tfs 0 n)
               runs      (some-> unplaced (unplaced-runs n unpositioned))
               placed    (when (= (some? unplaced) (some? runs))
                           (placed-counts tfs runs))

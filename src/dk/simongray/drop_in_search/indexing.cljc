@@ -5,8 +5,8 @@
   An index is a map of:
 
   - :segments, a vector of its segments
-  - :docs, a map of each id to the index of its segment and its number
-    there
+  - :docs, a map of each id to its place, one number of the index of its
+    segment and its number there
   - :fields, a map of each field to its number
   - :defaults, the options of its queries, if any
 
@@ -28,9 +28,23 @@
   (cond-> index
     f (vary-meta assoc ::term-fn f)))
 
+;; One number takes far less memory than a pair of them, in a map of every
+;; document of an index
+(defn ^:no-doc place
+  "The place of the document numbered `no` in the segment at `i` of an
+  index, as one number."
+  [i no]
+  (+ (* (long i) 4294967296) (long no)))
+
+(defn ^:no-doc place-parts
+  "The index of the segment and the number of the document at the place
+  `p`, as a pair."
+  [p]
+  [(quot (long p) 4294967296) (rem (long p) 4294967296)])
+
 (defn- located
-  "The `docs` of an index, a map of each id to the index of its segment and
-  its number there, with those of the `segments` from the one at `i` on."
+  "The `docs` of an index, a map of each id to its place, with those of
+  the `segments` from the one at `i` on."
   [docs segments i]
   (persistent!
    (reduce (fn [docs i]
@@ -39,7 +53,7 @@
                (reduce-kv (fn [docs no id]
                             (if (contains? deleted no)
                               docs
-                              (assoc! docs id [i no])))
+                              (assoc! docs id (place i no))))
                           docs
                           (.-ids segment))))
            (transient docs)
@@ -111,8 +125,9 @@
   (let [found (select-keys (:docs index) ids)]
     (if (empty? found)
       index
-      (let [by-segment (reduce (fn [acc [_ [i no]]]
-                                 (update acc i (fnil conj []) no))
+      (let [by-segment (reduce (fn [acc [_ p]]
+                                 (let [[i no] (place-parts p)]
+                                   (update acc i (fnil conj []) no)))
                                {}
                                found)]
         (-> index
