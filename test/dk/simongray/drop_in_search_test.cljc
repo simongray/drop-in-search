@@ -330,6 +330,24 @@
                       (map #(outcome (flipped body %)) (range (size body))))
               "and read or throw one of these with a wrong byte"))))))
 
+(deftest a-cap-on-the-terms-of-a-field
+  (let [doc    #(hash-map :id %1 :fields {:title "Clojure" :notes %2})
+        capped (search/index [(doc 1 "a b c d e") (doc 2 "d a")]
+                             {:max-field-terms {:notes 3}})
+        cut    (search/index [(doc 1 "a b c") (doc 2 "d a")])
+        ids    #(set (map :id (search/query capped %)))]
+    (is (= #{2} (ids "d ")) "the terms after the cap are left out")
+    (is (= #{1 2} (ids "a ")))
+    (is (= #{} (ids "\"c d\"")) "and so is a phrase across it")
+    (is (= (search/query cut "a | c ") (search/query capped "a | c "))
+        "as if the field ended there, its length too")
+    (is (= 1000000 search/max-field-terms) "the cap without the option")
+    (testing "in a snippet and matches? of a text of the field"
+      (is (not (search/matches? capped "a b c d e" "d " {:field :notes})))
+      (is (search/matches? capped "a b c d e" "d " {:field :title}))
+      (is (= [{:text "a b c d e"}]
+             (search/snippet capped "a b c d e" "d " {:field :notes}))))))
+
 (deftest operators
   (is (= [3 1 2] (ids "clojure | tomatoes")))
   (is (= [1] (ids "clojure -rust")))

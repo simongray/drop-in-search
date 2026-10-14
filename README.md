@@ -194,6 +194,11 @@ words anywhere in the field, as
 no positions, and stays a phrase in the other fields. The CIFF files of
 such an index are of a newer version, which 0.2 doesn't read.
 
+You can also index only the first words of a long field, e.g. with
+`{:transcript 10000}` as `:max-field-terms`, as Lucene's
+[LimitTokenCountFilter](https://lucene.apache.org/core/9_11_1/analysis/common/org/apache/lucene/analysis/miscellaneous/LimitTokenCountFilter.html)
+does. The words after them are left out, as if the field ended there.
+
 Saving an index
 ---------------
 

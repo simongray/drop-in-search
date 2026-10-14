@@ -47,7 +47,7 @@
   #{:aliases :syntax :operator :prefix? :min-prefix :max-terms :max-depth
     :term-fn :fuzzy :typo-lengths :known-pred :width :field :limit :offset
     :boosts :fields :k1 :b :filter-pred :rank-fn :max-completions
-    :max-expansions :without-positions})
+    :max-expansions :without-positions :max-field-terms})
 
 (defn ^:no-doc checked
   "The `opts` as they are, or a throw when they aren't a map, or hold an
@@ -761,15 +761,22 @@
   - :field, the field of a document that the text is from, so that only
     the words of the query in that field or in none match
   - :without-positions, the fields that an index has no positions of, in
-    whose text a phrase matches its words anywhere, as in the index"
+    whose text a phrase matches its words anywhere, as in the index
+  - :max-field-terms, the most terms of each field that an index holds,
+    after which the text of :field matches nothing, as in the index"
   ([text q]
    (snippet text q {}))
-  ([text q {:keys [width term-fn field] :or {width 160} :as opts}]
+  ([text q {:keys [width term-fn field max-field-terms]
+            :or   {width 160}
+            :as   opts}]
    (checked opts)
    (let [text       (analysis/text text)
          spans      (analysis/mapped-spans term-fn (analysis/spans text))
+         most       (get max-field-terms field)
+         held       (cond->> spans
+                      most (take-while #(< (long (:position %)) (long most))))
          query      (text-query q opts)
-         found      (hits spans (filterv #(in-field? field %) (leaves query)))
+         found      (hits held (filterv #(in-field? field %) (leaves query)))
          length     (count text)
          [from to]  (:window (window spans found width length))
          inside     (filter #(and (<= from (:start %)) (<= (:end %) to))
@@ -812,13 +819,19 @@
   as one field of a document would, its :field if it's given."
   ([text q]
    (matches? text q {}))
-  ([text q {:keys [term-fn field] :as opts}]
+  ([text q {:keys [term-fn field max-field-terms] :as opts}]
    (checked opts)
    (let [text   (analysis/text text)
+         most   (get max-field-terms field)
          terms  (delay (into #{}
                              (mapcat #(if (vector? %) % [%]))
-                             (analysis/mapped term-fn (analysis/tokens text))))
-         spans  (delay (analysis/mapped-spans term-fn (analysis/spans text)))
+                             (cond->> (analysis/mapped term-fn
+                                                       (analysis/tokens text))
+                               most (take most))))
+         spans  (delay (cond->> (analysis/mapped-spans term-fn
+                                                       (analysis/spans text))
+                         most (take-while #(< (long (:position %))
+                                              (long most)))))
          found? (fn [{:keys [term phrase prefix?] :as leaf}]
                   (cond
                     (not (in-field? field leaf))

@@ -452,13 +452,22 @@
            (transient {})
            (sort-by numbers (keys analyzed)))))
 
+;; Lucene's LimitTokenCountFilter: a field is indexed up to a number of its
+;; terms, and the rest are left out, as if the field ended there
 (defn ^:no-doc analyzed-fields
   "The terms by position of each of the `fields` of a document that has
-  any, with `term-fn` applied to the terms of a text, if it's given."
-  [fields term-fn]
+  any, with `term-fn` applied to the terms of a text, if it's given, up to
+  the number of each in `most`, a map of fields to the most terms to
+  index, or positions-per-field."
+  [fields term-fn most]
   (into {}
         (keep (fn [[field v]]
-                (let [terms (analyze v term-fn)]
+                (let [n     (-> (get most field postings/positions-per-field)
+                                (max 0)
+                                (min postings/positions-per-field))
+                      terms (analyze v term-fn)
+                      terms (cond-> terms
+                              (< n (count terms)) (subvec 0 n))]
                   (when (seq terms)
                     [field terms]))))
         fields))

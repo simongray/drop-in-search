@@ -137,15 +137,17 @@
 
 (defn- with-segment
   "The `index` with a new segment of the documents `docs`, the terms of
-  whose fields `f` maps, if given."
+  whose fields `f` maps, if given, with the :max-field-terms and
+  :without-positions of the index."
   [index f docs]
-  (let [entries      (mapv #(update % :fields segment/analyzed-fields f) docs)
+  (let [opts         (:defaults index)
+        entries      (mapv #(update % :fields segment/analyzed-fields f
+                                    (:max-field-terms opts))
+                           docs)
         numbers      (reduce segment/numbered
                              (:fields index)
                              (map :fields entries))
-        unpositioned (into #{}
-                           (keep numbers)
-                           (:without-positions (:defaults index)))
+        unpositioned (into #{} (keep numbers) (:without-positions opts))
         segments     (:segments index)]
     (-> (assoc index :fields numbers)
         (with-segments (conj segments
