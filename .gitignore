@@ -10,3 +10,6 @@ target/
 # ClojureScript tooling
 node_modules/
 .shadow-cljs/
+
+# Local corpora of real documents for measuring, not to be committed
+dev-resources/corpus/
