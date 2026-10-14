@@ -5,26 +5,26 @@ drop-in-search
 
 This is a Clojure and ClojureScript library for adding full-text search
 to your app, e.g. to search the posts of a blog, the episodes of a
-podcast app, or the records of a CMS. It's a search engine without a
-server or a UI: you make documents of your own data, and it gives you the
-best matches, which you show however you like.
+podcast app or the records of a CMS. It's a search engine without a
+server or a UI: you turn your data into documents, and it gives you the
+best matches to show however you like.
 
-- **Ranking.** It ranks the results by
+- **Ranking.** Results are ranked by
   [BM25F](https://www.elastic.co/blog/practical-bm25-part-2-the-bm25-algorithm-and-its-variables),
-  and a match in one field can count more than a match in another.
+  and a match in one field can count for more than a match in another.
 - **Queries.** Your users can type AND, OR and NOT, "phrases", prefixes
-  and field:word, as in SQLite or Lucene, and a word with a typo still
-  finds the words it's close to.
-- **Many languages.** Case and diacritics don't count, and words in
-  Chinese, Japanese, Korean and Thai are found without a dictionary.
-- **Snippets.** It marks where a text matches a query, e.g. for a list of
-  results.
-- **Saving.** An index prints as EDN, and a large one can be saved in the
-  Common Index File Format, e.g. in a folder or
+  and field:word, as in SQLite or Lucene. A word with a typo still finds
+  the words it's close to.
+- **Many languages.** Case and diacritics are ignored, and Chinese,
+  Japanese, Korean and Thai work without a dictionary.
+- **Snippets.** It marks where a text matches a query, e.g. to highlight
+  the matches in a list of results.
+- **Saving.** An index prints as EDN, and a large one can be saved in
+  the Common Index File Format, e.g. to a folder or to
   [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API).
 
-The same code runs on the JVM, in Node and in the browser, with the same
-results on each.
+The same code runs on the JVM, in Node and in the browser, and gives the
+same results on each.
 
 > This library was spun out of [podcast-clj](https://github.com/simongray/podcast-clj),
 > a library for making podcast software, which uses it to search episodes
@@ -34,29 +34,24 @@ results on each.
 Getting started
 ---------------
 
-It requires Clojure 1.11+ and Java 11+. For the latest release, add it
-from [Clojars](https://clojars.org/dk.simongray/drop-in-search) to the
-`:deps` in your `deps.edn`:
+It requires Clojure 1.11+ and Java 11+. Add it from
+[Clojars](https://clojars.org/dk.simongray/drop-in-search) to the `:deps`
+in your `deps.edn`:
 
 ```clojure
 dk.simongray/drop-in-search {:mvn/version "0.2.1"}
 ```
 
-For changes that aren't released yet, use the SHA of the latest commit on
-`master` instead:
+For unreleased changes, depend on the latest commit on `master` instead.
+In shadow-cljs, a Git dependency only works through `deps.edn`, so set
+`:deps true` in your `shadow-cljs.edn` too.
 
-```clojure
-dk.simongray/drop-in-search
-{:git/url "https://github.com/simongray/drop-in-search"
- :git/sha "…"}
-```
+Searching
+---------
 
-For ClojureScript, shadow-cljs only reads Git dependencies from
-`deps.edn`, so also set `:deps true` in your `shadow-cljs.edn`.
-
-Then make a document of each of your records. A document has an `:id`,
-the `:fields` to search, and the `:stored` data that comes back in a
-result:
+Make a document of each of your records, with an `:id`, the `:fields` to
+search, and the `:stored` data that comes back with a result. Then index
+the documents and query the index:
 
 ```clojure
 (require '[dk.simongray.drop-in-search :as search])
@@ -87,10 +82,10 @@ result:
 ;;      :stored {:title "The value of values in Clojure"}}]
 ```
 
-The `:boosts` make a match in the title count three times as much as a
-match in the other fields, and `-rust` leaves out the posts that mention
-Rust. A word with a typo also matches the words it's close to, and the
-result lists them under `:typos`:
+The `:boosts` make a match in the title count three times as much as one
+in the other fields, and `-rust` leaves out the posts that mention Rust.
+A word with a typo matches the words it's close to, which the result
+lists under `:typos`:
 
 ```clojure
 (search/query idx "borow")
@@ -101,14 +96,17 @@ result lists them under `:typos`:
 ```
 
 The index is a value, and nothing runs in the background. When a post
-changes, `(search/add idx (document post))` gives an index with the new
-version of it, and `(search/remove idx "values")` gives one without the
-post. The number of documents is `(search/size idx)`, and
-`(search/document idx "values")` gives one by its id, with what's
-stored.
+changes, `(search/add idx (document post))` gives an index with its new
+version, and `(search/remove idx "values")` gives one without it. To
+count the documents, use `search/size`, and to get one by its id, with
+its stored data, use `search/document`.
 
-To show where a result matches, `search/snippet` cuts a window of the
-text around the matches, and reads the query as `search/query` does:
+Snippets
+--------
+
+To show where a result matches, cut a window of its text around the
+matches with `search/snippet`, which reads the query as `search/query`
+does:
 
 ```clojure
 (search/snippet idx (:body (second posts)) "clojure")
@@ -117,30 +115,34 @@ text around the matches, and reads the query as `search/query` does:
 ;;     {:text "."}]
 ```
 
-For a query that names a field, e.g. `title:clojure`, give the field
-that the text is from as `:field`, so that only the words for that
+When the query names a field, e.g. `title:clojure`, give the field that
+the text comes from as `:field`, so that only the words meant for that
 field are marked. To tell whether a text matches a query at all, use
 `search/matches?`.
 
 Options
 -------
 
-The functions that build an index or read a query take an optional map
-of options as their last argument, e.g. `:limit` and `:offset` for a page
-of results. The page has the `:total` of the matches in its metadata, for
-"1 to 10 of 243", unless a `:filter-pred` filled the page before it read
-them all. The options of `search/index` are the defaults of every
-query of that index, e.g. the `:boosts` above. The docstrings of
-`search/query` and `search.queries/parse` list them all. Every function
-takes the same set of options, so you can pass one map to each, and an
-option outside it, e.g. `:limt` for `:limit`, throws.
+The functions that build an index or read a query take a map of options
+as their last argument, e.g. `:limit` and `:offset` for a page of
+results. The metadata of the page has the `:total` of the matches, for
+"1 to 10 of 243", unless a `:filter-pred` let the page fill up before
+every match was read.
 
-The library doesn't stem, but you can bring your own
+The options of `search/index` are the defaults of every query of that
+index, e.g. the `:boosts` above. All the functions take the same set of
+options, so one map can go to each, and an option that isn't in it
+throws, e.g. `:limt` for `:limit`. The docstrings of `search/query` and
+`search.queries/parse` list them all.
+
+Stemming
+--------
+
+The library doesn't stem words, but you can bring your own
 [stemmer](https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html)
-as the `:term-fn` of the index, a function of each term that gives the
-term to index and to look for in its place. It applies to the words of
-the documents, of every query, and of a snippet, so that "posts" finds
-"post":
+as the `:term-fn` of the index. It's a function of a term that gives the
+term to index and search for instead, and it applies to the documents,
+the queries and the snippets alike, so that "checkers" finds "checker":
 
 ```clojure
 (require '[clojure.string :as str])
@@ -159,10 +161,11 @@ the documents, of every query, and of a snippet, so that "posts" finds
 ;; => ["borrowing"]
 ```
 
-A function can't be saved with the index, so give the same `:term-fn`
-to `search/restore` and `ciff/read-files` when you read it back. Without
-it, the words of the documents you add and of your queries stay as they
-are, unlike those already in the index.
+Here `:fuzzy false` turns off the typos, so that only the stem finds the
+post. A function can't be saved with an index, so give the same
+`:term-fn` to `search/restore` and `ciff/read-files` when you read one
+back. Without it, the words of new documents and of queries aren't
+stemmed, while those already in the index are.
 
 Saving an index
 ---------------
@@ -177,15 +180,15 @@ An index prints as EDN, and `search/restore` reads it back:
 (search/restore (edn/read-string saved))
 ```
 
-For a large index, require `dk.simongray.drop-in-search.ciff` as `ciff`.
-Then `ciff/plan` gives you a manifest in EDN, a file for each
+A large index is faster to save in the
+[Common Index File Format](https://github.com/osirrc/ciff) (CIFF), with
+the `dk.simongray.drop-in-search.ciff` namespace, required as `ciff`.
+Then `ciff/plan` gives you a manifest in EDN and a file for each
 [segment](https://lucene.apache.org/core/9_11_1/core/org/apache/lucene/codecs/lucene99/package-summary.html#Segments)
-of the index in the
-[Common Index File Format](https://github.com/osirrc/ciff), and the names
-of the files to delete. A segment's file is named after what it holds, so
-a change only adds the segments that are new. You can keep the files in a
-folder, in IndexedDB or anywhere else, and `ciff/read-files` reads them
-back.
+of the index, along with the names of the files to delete. A segment's
+file is named after what it holds, so a change only writes the segments
+that are new. Keep the files in a folder, in IndexedDB or anywhere else,
+and read them back with `ciff/read-files`.
 
 Switch to CIFF once reading the EDN back takes too long. For 20,000
 posts of 120 words, measured on an Apple M1 with JDK 24 and Node 24 on
@@ -198,30 +201,34 @@ posts of 120 words, measured on an Apple M1 with JDK 24 and Node 24 on
 | EDN in Node | 44 MB | 2.2 s | 5.3 s |
 | CIFF in Node | 18 MB | 0.7 s | 0.5 s |
 
+A CIFF index records the version of its format, and `ciff/read-files`
+throws with the `:type` `:dk.simongray.drop-in-search.ciff/newer-format`
+for one that's newer than it reads. The EDN of an index has no version,
+so index the documents again after a release that changes its shape.
+
 Principles
 ----------
 
 - **Standards first.** The ranking is BM25F as Robertson and Zaragoza
-  define it, and the query language takes the words of
+  define it, and the query language takes its words from
   [SQLite FTS5](https://www.sqlite.org/fts5.html#full_text_query_syntax)
-  and the signs of
+  and its symbols from
   [Lucene's simple query parser](https://lucene.apache.org/core/9_11_1/queryparser/org/apache/lucene/queryparser/simple/SimpleQueryParser.html).
-  Other search engines can read a saved index, and the code cites its
-  sources.
-- **Fields count together.** A word's matches in each field are weighted
-  and added up before they count, so a word that appears once in each of
-  three fields counts as much as one that appears three times in one
-  field.
-- **The same words everywhere.** Words split at anything that isn't a
-  letter or a digit. The
+  Other search engines can read an index saved as CIFF, and the code
+  cites its sources.
+- **Fields count together.** A word's matches are weighted by field and
+  added up before they're scored, so a word that appears once in each of
+  three fields counts as much as one that appears three times in one.
+- **The same words everywhere.** Text splits into words at anything that
+  isn't a letter or a digit. The library doesn't use the
   [word segmenters](https://en.wikipedia.org/wiki/Text_segmentation#Word_segmentation)
-  of Java and JavaScript split Chinese differently, so the library
-  doesn't use them, and an index finds the same words on every device. A
-  date counts as its date and time in UTC, e.g. 2024-03-01 09:30:00.
-- **No stemming.** The last word of a query completes as a prefix
-  instead, and a `:term-fn` brings a stemmer of your own.
+  of Java and JavaScript, since they split Chinese differently, so an
+  index finds the same words on every device. A date is indexed as its
+  date and time in UTC, e.g. 2024-03-01 09:30:00.
+- **No stemming.** Instead, the last word of a query completes as a
+  prefix, and a `:term-fn` can bring a stemmer of your own.
 - **Typos per word.** By default, only a word that no document holds
-  also matches words with typos, rather than every word of a query that
+  matches the words close to it, rather than every word of a query that
   finds too little, so the words that are spelled right stay exact.
 - **Any query is safe.** Nothing a user types is an error, and limits on
   the words, groups, prefixes and typos of a query keep its cost bounded.
@@ -230,21 +237,6 @@ Principles
   AND in Danish.
 - **One codebase.** The library is written in `.cljc`, with no
   dependencies but Clojure.
-
-Versions
---------
-
-Until 1.0, a release that changes the API gets a new minor version, e.g.
-from 0.4.2 to 0.5.0, and one that only fixes gets a new patch version,
-e.g. from 0.4.2 to 0.4.3. A function that's renamed or removed goes
-without a deprecated alias, and the commit of each release says what
-changed. The tests run in CI on Java 11 and 25, in Node and in a
-headless Chrome.
-
-A CIFF index records the version of its format, and `ciff/read-files`
-throws with the `:type` `:dk.simongray.drop-in-search.ciff/newer-format`
-for one that's newer than it reads. The EDN of an index has no version,
-so index the documents again after a release that changes its shape.
 
 Development
 -----------
