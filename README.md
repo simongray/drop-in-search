@@ -39,7 +39,7 @@ It requires Clojure 1.11+ and Java 11+. Add it from
 in your `deps.edn`:
 
 ```clojure
-dk.simongray/drop-in-search {:mvn/version "0.2.1"}
+dk.simongray/drop-in-search {:mvn/version "0.3.0"}
 ```
 
 For unreleased changes, depend on the latest commit on `master` instead.
