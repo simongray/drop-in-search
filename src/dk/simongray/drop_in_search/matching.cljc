@@ -3,11 +3,14 @@
   and their scores, its clauses combined as in Lucene's BooleanQuery,
   https://lucene.apache.org/core/9_11_1/core/"
   (:require [dk.simongray.drop-in-search.hits :as hits]
+            [dk.simongray.drop-in-search.postings :as postings
+             #?@(:cljs [:refer [Cursor]])]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.scoring :as scoring]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor]
+                   [dk.simongray.drop_in_search.segment Segment])))
 
 (declare hits-in)
 
@@ -29,7 +32,8 @@
   [segment node]
   (let [costs   #(map (partial cost segment)
                       (first (search.queries/clauses %)))
-        held-by #(segment/postings-count (segment/term-ranges segment %))]
+        held-by #(segment/postings-count segment
+                                         (segment/term-numbers segment %))]
     (case (search.queries/kind node)
       :and    (reduce min ##Inf (costs (:and node)))
       :or     (reduce + 0 (costs (:or node)))
@@ -77,11 +81,11 @@
   terms and of each of its :typos terms at its boost."
   [{:keys [k1]} segment {:keys [weights summed typos]} candidates]
   (let [scored (fn [terms idf]
-                 (-> (scoring/range-frequencies segment
-                                                weights
-                                                (segment/term-ranges segment
+                 (-> (scoring/term-frequencies segment
+                                               weights
+                                               (segment/term-numbers segment
                                                                      terms)
-                                                candidates)
+                                               candidates)
                      (scoring/saturated idf k1)))
         exact  (when summed
                  [(scored (:terms summed) (:idf summed))])
@@ -93,63 +97,52 @@
       (reduce (partial hits/joined :max) parts)
       (hits/no-hits))))
 
-;; One walk through each term's postings for all the candidates, as in
-;; scoring's add-frequencies!, rather than a search for each candidate
-(defn- place-slices
+(defn- place-positions
   "For each of the `candidates`, a sorted array of numbers of documents of
-  `segment`, the ranges of its positions for a place of a phrase, from the
-  `ranges` of the postings of the terms that the place can hold, as an
-  array of vectors of pairs, or nil for a document without one."
-  [^Segment segment ^ints candidates ranges]
-  (let [^ints docs      (.-docs segment)
-        ^ints pos-start (.-pos-start segment)
-        n               (alength candidates)
-        ^objects slices (object-array n)]
-    (doseq [[from to] ranges]
-      (loop [j 0 k (long from)]
-        (when (and (< j n) (< k (long to)))
-          (let [d (aget candidates j)
-                e (aget docs k)]
-            (cond
-              (< d e) (recur (segment/seek candidates j n e) k)
-              (> d e) (recur j (segment/seek docs k to d))
-              :else   (let [slice [(aget pos-start k) (aget pos-start (inc k))]]
-                        (aset slices j (conj (or (aget slices j) []) slice))
-                        (recur (inc j) (inc k))))))))
-    slices))
+  `segment`, the positions there of the terms numbered `ts` that a place
+  of a phrase can hold, as an array of vectors of sorted arrays, or nil
+  for a document without one."
+  [segment ^ints candidates ts]
+  (let [^objects positions (object-array (alength candidates))]
+    (doseq [t ts]
+      (let [^Cursor c (segment/cursor segment t)]
+        (segment/each-held! c candidates
+                            #(aset positions %
+                                   (conj (or (aget positions %) [])
+                                         (.positions c))))))
+    positions))
 
 (defn- holds?
-  "Whether one of the `slices`, ranges of sorted positions in `segment`,
-  holds the position `x`."
-  [^Segment segment slices x]
-  (let [^ints positions (.-positions segment)
-        x               (long x)]
+  "Whether one of the arrays of sorted positions `held` holds the position
+  `x`."
+  [held x]
+  (let [x (long x)]
     (boolean
-     (some (fn [[from to]]
-             (let [to (long to)
-                   i  (segment/lower-bound positions (long from) to x)]
+     (some (fn [^ints positions]
+             (let [to (alength positions)
+                   i  (segment/lower-bound positions 0 to x)]
                (and (< i to) (= x (aget positions i)))))
-           slices))))
+           held))))
 
 (defn- phrase-starts
-  "The positions in `segment` where the places of a phrase start in a row,
-  from the `slices` of each place in one document."
-  [^Segment segment slices]
-  (let [^ints positions (.-positions segment)]
-    (for [[from to] (first slices)
-          i         (range from to)
-          :let      [start (aget positions i)]
-          :when     (every? #(holds? segment (nth slices %) (+ start %))
-                            (range 1 (count slices)))]
-      start)))
+  "The positions where the places of a phrase start in a row, from the
+  `positions` of each place in one document, arrays of them."
+  [positions]
+  (for [^ints held (first positions)
+        i          (range (alength held))
+        :let       [start (aget held i)]
+        :when      (every? #(holds? (nth positions %) (+ start %))
+                           (range 1 (count positions)))]
+    start))
 
 (defn- phrase-frequency
   "BM25F's frequency of a phrase in the document `d` of `segment`, from the
-  `slices` of each place of it there, with the `weights` of the fields."
-  [segment weights d slices]
-  (->> (phrase-starts segment slices)
+  `positions` of each place of it there, with the `weights` of the
+  fields."
+  [segment weights d positions]
+  (->> (phrase-starts positions)
        (map #(scoring/occurrence segment weights d
-                                 (quot % segment/positions-per-field)))
+                                 (quot % postings/positions-per-field)))
        (reduce + 0.0)))
 
 (defn- phrase-hits
@@ -157,27 +150,29 @@
   `leaf`, with the saturation of `ctx`. The documents of its rarest place
   are those to look in."
   [{:keys [k1]} segment {:keys [weights places idf]} candidates]
-  (let [ranges (mapv #(segment/term-ranges segment %) places)]
-    (if (some empty? ranges)
+  (let [held (mapv #(segment/term-numbers segment %) places)]
+    (if (some empty? held)
       (hits/no-hits)
-      (let [rarest     (apply min-key segment/postings-count ranges)
-            ^ints docs (:docs (scoring/range-frequencies segment
-                                                         weights
-                                                         rarest
-                                                         candidates))
-            by-place   (mapv #(place-slices segment docs %) ranges)
-            slices-of  (fn [j]
-                         (mapv (fn [^objects slices] (aget slices j))
-                               by-place))
-            found      (into []
-                             (keep #(let [d (aget docs %)
-                                          f (phrase-frequency segment
-                                                              weights
-                                                              d
-                                                              (slices-of %))]
-                                      (when (pos? f)
-                                        [d f])))
-                             (range (alength docs)))]
+      (let [rarest       (apply min-key #(segment/postings-count segment %)
+                                held)
+            ^ints docs   (:docs (scoring/term-frequencies segment
+                                                          weights
+                                                          rarest
+                                                          candidates))
+            by-place     (mapv #(place-positions segment docs %) held)
+            positions-of (fn [j]
+                           (mapv (fn [^objects positions] (aget positions j))
+                                 by-place))
+            found        (into []
+                               (keep #(let [d (aget docs %)
+                                            f (phrase-frequency
+                                               segment
+                                               weights
+                                               d
+                                               (positions-of %))]
+                                        (when (pos? f)
+                                          [d f])))
+                               (range (alength docs)))]
         (scoring/saturated {:docs   (segment/as-ints (mapv first found))
                             :scores (segment/as-doubles (mapv second found))}
                            idf

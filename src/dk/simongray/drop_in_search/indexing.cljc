@@ -5,8 +5,8 @@
   An index is a map of:
 
   - :segments, a vector of its segments
-  - :docs, a map of each id to the index of its segment and its number
-    there
+  - :docs, a map of each id to its place, one number of the index of its
+    segment and its number there
   - :fields, a map of each field to its number
   - :defaults, the options of its queries, if any
 
@@ -28,9 +28,23 @@
   (cond-> index
     f (vary-meta assoc ::term-fn f)))
 
+;; One number takes far less memory than a pair of them, in a map of every
+;; document of an index
+(defn ^:no-doc place
+  "The place of the document numbered `no` in the segment at `i` of an
+  index, as one number."
+  [i no]
+  (+ (* (long i) 4294967296) (long no)))
+
+(defn ^:no-doc place-parts
+  "The index of the segment and the number of the document at the place
+  `p`, as a pair."
+  [p]
+  [(quot (long p) 4294967296) (rem (long p) 4294967296)])
+
 (defn- located
-  "The `docs` of an index, a map of each id to the index of its segment and
-  its number there, with those of the `segments` from the one at `i` on."
+  "The `docs` of an index, a map of each id to its place, with those of
+  the `segments` from the one at `i` on."
   [docs segments i]
   (persistent!
    (reduce (fn [docs i]
@@ -39,7 +53,7 @@
                (reduce-kv (fn [docs no id]
                             (if (contains? deleted no)
                               docs
-                              (assoc! docs id [i no])))
+                              (assoc! docs id (place i no))))
                           docs
                           (.-ids segment))))
            (transient docs)
@@ -111,8 +125,9 @@
   (let [found (select-keys (:docs index) ids)]
     (if (empty? found)
       index
-      (let [by-segment (reduce (fn [acc [_ [i no]]]
-                                 (update acc i (fnil conj []) no))
+      (let [by-segment (reduce (fn [acc [_ p]]
+                                 (let [[i no] (place-parts p)]
+                                   (update acc i (fnil conj []) no)))
                                {}
                                found)]
         (-> index
@@ -135,27 +150,50 @@
   (let [last-at (zipmap (map :id docs) (range))]
     (keep-indexed #(when (= %1 (last-at (:id %2))) %2) docs)))
 
+(defn- with-segment
+  "The `index` with a new segment of the documents `docs`, the terms of
+  whose fields `f` maps, if given, with the :max-field-terms and
+  :without-positions of the index."
+  [index f docs]
+  (let [opts         (:defaults index)
+        entries      (mapv #(update % :fields segment/analyzed-fields f
+                                    (:max-field-terms opts))
+                           docs)
+        numbers      (reduce segment/numbered
+                             (:fields index)
+                             (map :fields entries))
+        unpositioned (into #{} (keep numbers) (:without-positions opts))
+        segments     (:segments index)]
+    (-> (assoc index :fields numbers)
+        (with-segments (conj segments
+                             (segment/built numbers unpositioned entries))
+                       (count segments)))))
+
 ;; A segment is built of at most 4096 documents at once, so that building
 ;; it takes little memory, and merges join the segments
-(defn ^:no-doc added
+(defn- with-segments-of
   "The `index` with the documents `docs`, which replace any of the same
-  ids."
-  [index docs]
+  ids, and `merged`, a function of an index, applied after each segment
+  of them."
+  [index docs merged]
   (when-let [doc (some #(when (nil? (:id %)) %) docs)]
     (throw (ex-info "A document needs an :id" {:document doc})))
   (let [docs (latest docs)
         f    (term-fn index)]
-    (reduce (fn [index chunk]
-              (let [entries  (mapv #(update % :fields segment/analyzed-fields f)
-                                   chunk)
-                    numbers  (reduce segment/numbered
-                                     (:fields index)
-                                     (map :fields entries))
-                    segments (:segments index)]
-                (-> (assoc index :fields numbers)
-                    (with-segments (conj segments
-                                         (segment/built numbers entries))
-                                   (count segments))
-                    balanced)))
+    (reduce #(merged (with-segment %1 f %2))
             (removed index (map :id docs))
             (partition-all 4096 docs))))
+
+(defn ^:no-doc added
+  "The `index` with the documents `docs`, which replace any of the same
+  ids."
+  [index docs]
+  (with-segments-of index docs balanced))
+
+;; The segments of the documents are merged once they're all built, which
+;; copies each document once
+(defn ^:no-doc indexed
+  "The `index` with the documents `docs`, which replace any of the same
+  ids, in one segment."
+  [index docs]
+  (compacted (with-segments-of index docs identity)))

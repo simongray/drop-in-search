@@ -10,36 +10,29 @@
   (:require #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as edn])
             [dk.simongray.drop-in-search :as search]
             [dk.simongray.drop-in-search.indexing :as indexing]
+            [dk.simongray.drop-in-search.postings :as postings
+             #?@(:cljs [:refer [Cursor Out Writer]])]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.segment Segment]
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor Out Writer]
+                   [dk.simongray.drop_in_search.segment Segment]
                    [java.nio.charset StandardCharsets])))
 
 (def ^:no-doc version
-  "The version of the format of the files of an index, which changes only
-  when the meaning of a part changes."
-  1)
+  "The newest version of the format of the files of an index that this
+  reads, which changes only when the meaning of a part changes: 2 for a
+  segment with fields without positions, and 1 for any other."
+  2)
+
+(defn- segment-version
+  "The version of the format of the file of `segment`."
+  [^Segment segment]
+  (if (seq (.-unpositioned segment)) 2 1))
 
 (def ^:no-doc manifest-name
   "The name of the file that lists the segments of an index."
   "index.edn")
-
-(defn- make-bytes
-  [n]
-  #?(:clj  (byte-array n)
-     :cljs (js/Uint8Array. n)))
-
-(defn- byte-count
-  ^long [bs]
-  #?(:clj  (alength ^bytes bs)
-     :cljs (.-length bs)))
-
-(defn- byte-at
-  "The byte at `i` of the bytes `bs`, from 0 to 255."
-  ^long [bs ^long i]
-  #?(:clj  (bit-and (aget ^bytes bs i) 0xFF)
-     :cljs (aget bs i)))
 
 (defn- put-byte!
   "Put the byte `x` into the bytes `bs` at `at`, and give where the next
@@ -55,7 +48,7 @@
   ^long [src bs ^long at]
   #?(:clj  (System/arraycopy src 0 bs (int at) (alength ^bytes src))
      :cljs (.set bs src at))
-  (+ at (byte-count src)))
+  (+ at (postings/byte-count src)))
 
 (defn- utf8
   "The string `s` as UTF-8 bytes."
@@ -117,7 +110,7 @@
         body           (case kind
                          :varint (varint-size v)
                          :double 8
-                         :bytes  (byte-count v)
+                         :bytes  (postings/byte-count v)
                          :packed (reduce + 0 (map varint-size v)))
         wire           (case kind :varint :varint :double :i64 :len)]
     (+ (varint-size (tag field wire))
@@ -133,7 +126,7 @@
       :varint (put-varint! bs (put-varint! bs at (tag field :varint)) v)
       :double (put-double! bs (put-varint! bs at (tag field :i64)) v)
       :bytes  (let [at (put-varint! bs at (tag field :len))]
-                (put-bytes! v bs (put-varint! bs at (byte-count v))))
+                (put-bytes! v bs (put-varint! bs at (postings/byte-count v))))
       :packed (let [at (put-varint! bs at (tag field :len))
                     at (put-varint! bs at (reduce + 0 (map varint-size v)))]
                 (reduce #(put-varint! bs %1 %2) at v)))))
@@ -153,26 +146,37 @@
           (put-varint! bs at (reduce + 0 (map field-size fields)))
           fields))
 
-;; The CIFF messages, with these fields of their own: a PostingsList has
-;; the positions of its postings as field 15, packed, each posting's first
-;; whole and the rest as the gap after the one before, a DocRecord has the
-;; length of each field as field 14, packed, and what is stored as EDN as
-;; field 15, and the Header has the version of this format as field 15
+;; The CIFF messages, with these fields of their own:
+;;
+;; - a PostingsList has the positions of its postings as field 15,
+;;   packed, each posting's first whole and the rest as the gap after the
+;;   one before, and the runs of its postings in the fields without
+;;   positions as field 14, packed: for each posting, the number of them,
+;;   and the field and the count of each
+;; - a DocRecord has the length of each field as field 14, packed, and
+;;   what is stored as EDN as field 15
+;; - the Header has the numbers of the fields without positions as field
+;;   14, packed, and the version of this format as field 15
 (defn- header-fields
   [^Segment segment]
-  (let [n-terms (alength ^objects (.-terms segment))
+  (let [n-terms (segment/term-count segment)
         n-docs  (segment/size segment)
         total   (areduce ^ints (.-lengths segment) i n 0
                          (+ n (aget ^ints (.-lengths segment) i)))]
-    [[1 :varint 1]
-     [2 :varint n-terms]
-     [3 :varint n-docs]
-     [4 :varint n-terms]
-     [5 :varint n-docs]
-     [6 :varint total]
-     [7 :double (if (pos? n-docs) (/ (double total) n-docs) 0.0)]
-     [8 :bytes (utf8 "A segment of an index of dk.simongray.drop-in-search")]
-     [15 :varint version]]))
+    (cond-> [[1 :varint 1]
+             [2 :varint n-terms]
+             [3 :varint n-docs]
+             [4 :varint n-terms]
+             [5 :varint n-docs]
+             [6 :varint total]
+             [7 :double (if (pos? n-docs) (/ (double total) n-docs) 0.0)]
+             [8 :bytes (utf8 (str "A segment of an index of"
+                                  " dk.simongray.drop-in-search"))]]
+      (seq (.-unpositioned segment))
+      (conj [14 :packed (vec (sort (.-unpositioned segment)))])
+
+      :always
+      (conj [15 :varint (segment-version segment)]))))
 
 (defn- doc-fields
   "The fields of the DocRecord of the document `d` of `segment`."
@@ -187,112 +191,168 @@
              [14 :packed lengths]]
       (some? stored) (conj [15 :bytes (utf8 (pr-str stored))]))))
 
+;; The postings are read twice, first for the count of their positions
+(defn- conj-unplaced!
+  "The transient `acc` with the runs of the posting at the cursor `c` in
+  the fields without positions, those with a 0 in `positioned`: their
+  number, and the field and the count of each."
+  [acc ^Cursor c ^ints positioned]
+  (let [runs (filterv #(zero? (aget positioned (.field c %)))
+                      (range (.runs c)))]
+    (reduce #(-> %1 (conj! (.field c %2)) (conj! (.freq c %2)))
+            (conj! acc (count runs))
+            runs)))
+
+;; The postings are read twice, first for the count of their positions
+(defn- term-postings
+  "The postings in `segment` of the term numbered `t`, as a map of arrays
+  of their :docs, their :tfs, the :placed of each, its positions, and
+  their :positions one after the other, and of their :unplaced runs, those
+  in the fields without positions, if it has any."
+  [^Segment segment t]
+  (let [n               (segment/doc-frequency segment t)
+        unplaced?       (seq (.-unpositioned segment))
+        ^ints docs      (segment/make-ints n)
+        ^ints tfs       (segment/make-ints n)
+        ^ints placed    (segment/make-ints n)
+        ^ints flags     (.-positioned segment)
+        ^Cursor c       (segment/cursor segment t)
+        unplaced        (loop [k 0 acc (transient [])]
+                          (if (< k n)
+                            (do (aset docs k (int (.nextDoc c)))
+                                (aset tfs k (int (.tf c)))
+                                (recur (inc k) (cond-> acc
+                                                 unplaced?
+                                                 (conj-unplaced! c flags))))
+                            (persistent! acc)))
+        ;; as many as the occurrences, of which some may have none
+        ^ints positions (segment/make-ints (areduce tfs k m 0
+                                                    (+ m (aget tfs k))))
+        ^Cursor c       (segment/cursor segment t)
+        at              (loop [k 0 at 0]
+                          (if (< k n)
+                            (do (.nextDoc c)
+                                (let [end (.readPositions c positions at)]
+                                  (aset placed k (int (- end at)))
+                                  (recur (inc k) end)))
+                            at))]
+    (cond-> {:docs      docs
+             :tfs       tfs
+             :placed    placed
+             :positions (if (== at (alength positions))
+                          positions
+                          (segment/slice positions 0 at))}
+      unplaced? (assoc :unplaced unplaced))))
+
 (defn- reduce-positions
-  "Reduce the positions of the postings of `segment` from `from` to `to`
-  with `f` from `init`, as they're packed: each posting's first whole and
-  the rest as the gap after the one before."
-  [f init ^Segment segment from to]
-  (let [^ints pos-start (.-pos-start segment)
-        ^ints positions (.-positions segment)
-        to              (long to)]
-    (loop [k (long from) i (long (aget pos-start from)) acc init]
-      (if (< k to)
-        (let [first? (= i (aget pos-start k))
-              gap    (if first?
-                       (aget positions i)
-                       (- (aget positions i) (aget positions (dec i))))
-              next-k (if (= (inc i) (aget pos-start (inc k))) (inc k) k)]
-          (recur next-k (inc i) (f acc gap)))
-        acc))))
+  "Reduce the `positions` of postings with the counts `placed`, both
+  arrays, with `f` from `init`, as they're packed: each posting's first
+  whole and the rest as the gap after the one before."
+  [f init ^ints placed ^ints positions]
+  (loop [k 0 i 0 start 0 acc init]
+    (cond
+      (== i (alength positions))
+      acc
+
+      (and (== i start) (zero? (aget placed k)))
+      (recur (inc k) i start acc)
+
+      (== i start)
+      (recur (inc k) (inc i) (+ i (aget placed k)) (f acc (aget positions i)))
+
+      :else
+      (recur k (inc i) start (f acc (- (aget positions i)
+                                       (aget positions (dec i))))))))
 
 (defn- list-sizes
-  "The bytes of the body of the PostingsList of the term `t` of `segment`,
-  whose UTF-8 is `term-bytes`, and of its packed positions, as a pair."
-  [^Segment segment term-bytes t]
-  (let [^ints doc-start (.-doc-start segment)
-        ^ints docs      (.-docs segment)
-        ^ints pos-start (.-pos-start segment)
-        from            (aget doc-start t)
-        to              (aget doc-start (inc t))
-        packed          (reduce-positions #(+ (long %1) (varint-size %2))
-                                          0 segment from to)
-        postings        (loop [k from n 0]
-                          (if (< k to)
-                            (let [gap  (- (aget docs k)
-                                          (if (= k from) 0 (aget docs (dec k))))
-                                  tf   (- (aget pos-start (inc k))
-                                          (aget pos-start k))
-                                  body (+ 2 (varint-size gap) (varint-size tf))]
-                              (recur (inc k) (+ n 1 (varint-size body) body)))
-                            n))
-        cf              (- (aget pos-start to) (aget pos-start from))
-        n               (byte-count term-bytes)]
+  "The bytes of the body of the PostingsList of the term whose UTF-8 is
+  `term-bytes`, with the `postings-list` of term-postings, and of its
+  packed positions, as a pair."
+  [{:keys [^ints docs ^ints tfs ^ints placed ^ints positions unplaced]
+    :as   postings-list}
+   term-bytes]
+  (let [packed   (reduce-positions #(+ (long %1) (varint-size %2))
+                                   0 placed positions)
+        postings (loop [k 0 n 0]
+                   (if (< k (alength docs))
+                     (let [gap  (- (aget docs k)
+                                   (if (zero? k) 0 (aget docs (dec k))))
+                           body (+ 2 (varint-size gap)
+                                   (varint-size (aget tfs k)))]
+                       (recur (inc k) (+ n 1 (varint-size body) body)))
+                     n))
+        n        (postings/byte-count term-bytes)]
     [(+ 1 (varint-size n) n
-        1 (varint-size (- to from))
-        1 (varint-size cf)
+        1 (varint-size (alength docs))
+        1 (varint-size (areduce tfs k m 0 (+ m (aget tfs k))))
         postings
+        (if unplaced (field-size [14 :packed unplaced]) 0)
         1 (varint-size packed) packed)
      packed]))
 
 (defn- put-list!
-  "Put the PostingsList of the term `t` of `segment` into the bytes `bs` at
-  `at`, with its UTF-8 `term-bytes` and the `sizes` of its body and its
-  packed positions, and give where the next one goes."
-  [bs at ^Segment segment term-bytes [body packed] t]
-  (let [^ints doc-start (.-doc-start segment)
-        ^ints docs      (.-docs segment)
-        ^ints pos-start (.-pos-start segment)
-        from            (aget doc-start t)
-        to              (aget doc-start (inc t))
-        put             (fn [at field kind v] (put-field! bs at [field kind v]))
-        at              (-> (put-varint! bs at body)
-                            (put 1 :bytes term-bytes)
-                            (put 2 :varint (- to from))
-                            (put 3 :varint (- (aget pos-start to)
-                                              (aget pos-start from))))
-        posting-tag     (tag 4 :len)
-        docid-tag       (tag 1 :varint)
-        tf-tag          (tag 2 :varint)
-        at              (loop [k from at (long at)]
-                          (if (< k to)
-                            (let [gap  (- (aget docs k)
-                                          (if (= k from) 0 (aget docs (dec k))))
-                                  tf   (- (aget pos-start (inc k))
-                                          (aget pos-start k))
-                                  body (+ 2 (varint-size gap) (varint-size tf))
-                                  at   (put-varint! bs at posting-tag)
-                                  at   (put-varint! bs at body)
-                                  at   (put-varint! bs at docid-tag)
-                                  at   (put-varint! bs at gap)
-                                  at   (put-varint! bs at tf-tag)]
-                              (recur (inc k) (put-varint! bs at tf)))
-                            at))
-        at              (put-varint! bs at (tag 15 :len))]
+  "Put the PostingsList of the term whose UTF-8 is `term-bytes` into the
+  bytes `bs` at `at`, with the `postings-list` of term-postings and the
+  `sizes` of its body and its packed positions, and give where the next
+  one goes."
+  [bs at {:keys [^ints docs ^ints tfs ^ints placed ^ints positions unplaced]
+          :as   postings-list}
+   term-bytes [body packed :as sizes]]
+  (let [put         (fn [at field kind v] (put-field! bs at [field kind v]))
+        at          (-> (put-varint! bs at body)
+                        (put 1 :bytes term-bytes)
+                        (put 2 :varint (alength docs))
+                        (put 3 :varint (areduce tfs k m 0
+                                                (+ m (aget tfs k)))))
+        posting-tag (tag 4 :len)
+        docid-tag   (tag 1 :varint)
+        tf-tag      (tag 2 :varint)
+        at          (loop [k 0 at (long at)]
+                      (if (< k (alength docs))
+                        (let [gap  (- (aget docs k)
+                                      (if (zero? k) 0 (aget docs (dec k))))
+                              tf   (aget tfs k)
+                              body (+ 2 (varint-size gap) (varint-size tf))
+                              at   (put-varint! bs at posting-tag)
+                              at   (put-varint! bs at body)
+                              at   (put-varint! bs at docid-tag)
+                              at   (put-varint! bs at gap)
+                              at   (put-varint! bs at tf-tag)]
+                          (recur (inc k) (put-varint! bs at tf)))
+                        at))
+        at          (cond-> at
+                      unplaced (put 14 :packed unplaced))
+        at          (put-varint! bs at (tag 15 :len))]
     (reduce-positions #(put-varint! bs %1 %2)
                       (put-varint! bs at packed)
-                      segment from to)))
+                      placed
+                      positions)))
 
+;; The postings of each term are read twice, once to size the file and
+;; once to write it, so that only one term's are read at a time
 (defn- segment-body
   "The CIFF file of `segment`, as bytes."
   [^Segment segment]
   (binding [*print-length* nil
             *print-level*  nil]
-    (let [terms      (mapv utf8 (.-terms segment))
-          sizes      (mapv #(list-sizes segment (terms %) %)
-                           (range (count terms)))
-          records    (mapv #(doc-fields segment %)
-                           (range (segment/size segment)))
-          header     (header-fields segment)
-          total      (+ (delimited-size header)
-                        (reduce + 0 (map (fn [[body]]
-                                           (+ (varint-size body) body))
-                                         sizes))
-                        (reduce + 0 (map delimited-size records)))
-          bs         (make-bytes total)
-          at         (put-message! bs 0 header)
-          at         (reduce #(put-list! bs %1 segment (terms %2) (sizes %2) %2)
-                             at
-                             (range (count terms)))]
+    (let [terms   (mapv #(utf8 (segment/term-at segment %))
+                        (range (segment/term-count segment)))
+          sizes   (mapv #(list-sizes (term-postings segment %) (terms %))
+                        (range (count terms)))
+          records (mapv #(doc-fields segment %)
+                        (range (segment/size segment)))
+          header  (header-fields segment)
+          total   (+ (delimited-size header)
+                     (reduce + 0 (map (fn [[body]]
+                                        (+ (varint-size body) body))
+                                      sizes))
+                     (reduce + 0 (map delimited-size records)))
+          bs      (postings/make-bytes total)
+          at      (put-message! bs 0 header)
+          at      (reduce #(put-list! bs %1 (term-postings segment %2)
+                                      (terms %2) (sizes %2))
+                          at
+                          (range (count terms)))]
       (reduce #(put-message! bs %1 %2) at records)
       bs)))
 
@@ -303,7 +363,9 @@
   [index]
   (binding [*print-length* nil
             *print-level*  nil]
-    (pr-str (cond-> {:version  version
+    (pr-str (cond-> {:version  (if (seq (:without-positions (:defaults index)))
+                                 2
+                                 1)
                      :fields   (:fields index)
                      :segments (mapv (fn [^Segment segment]
                                        {:name    (segment/segment-name segment)
@@ -372,7 +434,7 @@
       (throw (malformed "A number is too long" {}))
 
       :else
-      (let [b (byte-at bs at)
+      (let [b (postings/byte-at bs at)
             x (+ x (* scale (rem b 128)))]
         (if (< b 128)
           (do (aset cursor 0 (int (inc at)))
@@ -484,23 +546,26 @@
           (recur))))))
 
 (defn- absolute-positions
-  "The `packed` positions of the postings with the frequencies `tfs`, both
-  arrays, each posting's first whole and the rest as the gap after the one
-  before, as the positions themselves, or nil when they don't add up or
-  don't go up."
-  [^ints packed ^ints tfs]
+  "The `packed` positions of the postings with the `placed` counts of
+  them, both arrays, each posting's first whole and the rest as the gap
+  after the one before, as the positions themselves, or nil when they
+  don't add up or don't go up."
+  [^ints packed ^ints placed]
   (let [n               (alength packed)
         ^ints positions (segment/make-ints n)]
     (loop [k 0 i 0 start 0]
       (cond
+        (and (= i start) (< k (alength placed)) (zero? (aget placed k)))
+        (recur (inc k) i start)
+
         (= i n)
-        (when (and (= k (alength tfs)) (= i start))
+        (when (and (= k (alength placed)) (= i start))
           positions)
 
         (= i start)
-        (when (and (< k (alength tfs)) (pos? (aget tfs k)))
+        (when (< k (alength placed))
           (aset positions i (aget packed i))
-          (recur (inc k) (inc i) (+ i (aget tfs k))))
+          (recur (inc k) (inc i) (+ i (aget placed k))))
 
         :else
         (let [at (+ (aget positions (dec i)) (aget packed i))]
@@ -508,11 +573,83 @@
             (aset positions i (int at))
             (recur k (inc i) start)))))))
 
+(defn- unplaced-runs
+  "The runs of `n` postings in the fields numbered in `unpositioned`, the
+  fields without positions, which `packed` holds as field 14 of a
+  PostingsList, as a vector of pairs of a field and a count for each
+  posting, or nil when they don't add up."
+  [^ints packed n unpositioned]
+  (let [size (alength packed)
+        pair #(vector (aget packed (+ %1 1 (* 2 %2)))
+                      (aget packed (+ %1 2 (* 2 %2))))]
+    (loop [k 0 j 0 acc (transient [])]
+      (if (== k (long n))
+        (when (== j size)
+          (persistent! acc))
+        (let [m   (if (< j size) (aget packed j) -1)
+              end (+ j 1 (* 2 m))]
+          (when (and (<= 0 m) (<= end size))
+            (let [runs (mapv #(pair j %) (range m))]
+              (when (and (every? #(pos? (second %)) runs)
+                         (every? #(contains? unpositioned (first %)) runs)
+                         (apply < -1 (map first runs)))
+                (recur (inc k) end (conj! acc runs))))))))))
+
+(defn- placed-counts
+  "The counts of the positions of postings with the frequencies `tfs`,
+  those of their runs in the fields with positions, the rest being those
+  of their `runs`, if any, in the fields without, or nil when they don't
+  add up."
+  [^ints tfs runs]
+  (let [n            (alength tfs)
+        ^ints placed (segment/make-ints n)]
+    (loop [k 0]
+      (if (< k n)
+        (let [placed-k (- (aget tfs k)
+                          (reduce + 0 (map second (some-> runs (nth k)))))]
+          (when (and (pos? (aget tfs k)) (<= 0 placed-k))
+            (aset placed k (int placed-k))
+            (recur (inc k))))
+        placed))))
+
+;; A writer counts the occurrences of a field without positions, and drops
+;; their positions, so those of a file's runs in such fields are made up
+(defn- made-up-positions
+  "The `positions` of postings with the `placed` counts of them, with
+  positions made up for their `runs` in the fields without positions, as
+  many as their counts from the start of each field, in order with the
+  others, `total` of them."
+  [^ints positions ^ints placed runs total]
+  (let [^ints out (segment/make-ints total)
+        n         (alength placed)
+        ppf       postings/positions-per-field
+        end-of    #(if (< % n) (+ %2 (aget placed %)) %2)]
+    (loop [k 0 i 0 end (end-of 0 0) rs (first runs) o 0]
+      (cond
+        (== k n)
+        out
+
+        (and (seq rs)
+             (or (== i end)
+                 (< (first (first rs)) (quot (aget positions i) ppf))))
+        (let [[f c] (first rs)]
+          (dotimes [q c]
+            (aset out (+ o q) (int (+ (* f ppf) q))))
+          (recur k i end (rest rs) (+ o c)))
+
+        (< i end)
+        (do (aset out o (aget positions i))
+            (recur k (inc i) end rs (inc o)))
+
+        :else
+        (recur (inc k) i (end-of (inc k) i) (nth runs (inc k) nil) o)))))
+
 (defn- read-list!
   "The PostingsList of the message at the cursor of the bytes `bs`, which
-  ends at `end`, as a map of its :term, and of its :docs, :tfs and
+  ends at `end`, of a segment whose fields without positions are numbered
+  in `unpositioned`, as a map of its :term, and of its :docs, :tfs and
   :positions as arrays, or throws ::malformed."
-  [bs ^ints cursor ^long end]
+  [unpositioned bs ^ints cursor ^long end]
   (let [;; a Posting takes four bytes at least
         cap           (quot (- end (aget cursor 0)) 4)
         ^ints docs    (segment/make-ints cap)
@@ -520,14 +657,15 @@
         ^ints posting (segment/make-ints 2)
         term-tag      (tag 1 :len)
         posting-tag   (tag 4 :len)
+        unplaced-tag  (tag 14 :len)
         positions-tag (tag 15 :len)
         out-of-order  #(malformed "A postings list is out of order" {:term %})]
-    (loop [term nil n 0 doc 0 packed nil]
+    (loop [term nil n 0 doc 0 packed nil unplaced nil]
       (if (< (aget cursor 0) end)
         (let [t (read-varint! bs cursor end)]
           (cond
             (= t term-tag)
-            (recur (read-text! bs cursor end) n doc packed)
+            (recur (read-text! bs cursor end) n doc packed unplaced)
 
             (= t posting-tag)
             (let [_   (read-posting! bs cursor end posting)
@@ -539,23 +677,34 @@
                 (throw (out-of-order term)))
               (aset docs n (int doc))
               (aset tfs n (aget posting 1))
-              (recur term (inc n) doc packed))
+              (recur term (inc n) doc packed unplaced))
+
+            (= t unplaced-tag)
+            (recur term n doc packed (read-packed! bs cursor end))
 
             (= t positions-tag)
-            (recur term n doc (read-packed! bs cursor end))
+            (recur term n doc (read-packed! bs cursor end) unplaced)
 
             :else
             (do (skip! bs cursor end (rem t 8))
-                (recur term n doc packed))))
-        (let [tfs       (segment/slice tfs 0 n)
-              positions (some-> packed (absolute-positions tfs))]
+                (recur term n doc packed unplaced))))
+        (let [^ints tfs (segment/slice tfs 0 n)
+              runs      (some-> unplaced (unplaced-runs n unpositioned))
+              placed    (when (= (some? unplaced) (some? runs))
+                          (placed-counts tfs runs))
+              positions (when (and packed placed)
+                          (absolute-positions packed placed))]
           (when-not (and term positions)
             (throw (malformed "A postings list has no term or no positions"
                               {:term term})))
           {:term      term
            :docs      (segment/slice docs 0 n)
            :tfs       tfs
-           :positions positions})))))
+           :positions (if runs
+                        (made-up-positions positions placed runs
+                                           (areduce tfs k m 0
+                                                    (+ m (aget tfs k))))
+                        positions)})))))
 
 (defn- read-record!
   "The DocRecord of the message at the cursor of the bytes `bs`, which ends
@@ -576,12 +725,17 @@
 
 (defn- read-header!
   "The Header of the message at the cursor of the bytes `bs`, which ends at
-  `end`, as a map of its :lists, :docs and :version."
+  `end`, as a map of its :lists, :docs, :unpositioned and :version."
   [bs ^ints cursor ^long end]
   (reduce-fields (fn [acc field wire]
                    (case [field wire]
                      [2 0]  (assoc acc :lists (read-varint! bs cursor end))
                      [3 0]  (assoc acc :docs (read-varint! bs cursor end))
+                     [14 2] (let [^ints nos (read-packed! bs cursor end)]
+                              (assoc acc :unpositioned
+                                     (into #{}
+                                           (map #(long (aget nos %)))
+                                           (range (alength nos)))))
                      [15 0] (assoc acc :version (read-varint! bs cursor end))
                      nil))
                  {:lists 0 :docs 0}
@@ -594,7 +748,7 @@
   before it, read by `read-message!`, a function of the bytes, the cursor
   and where the message ends, `n` of them."
   [read-message! bs ^ints cursor n]
-  (let [end (byte-count bs)]
+  (let [end (postings/byte-count bs)]
     (loop [acc (transient []) i 0]
       (if (< i (long n))
         (let [to (read-len! bs cursor end)
@@ -602,18 +756,6 @@
           (aset cursor 0 (int to))
           (recur (conj! acc m) (inc i)))
         (persistent! acc)))))
-
-(defn- joined-ints
-  "The int `arrays` one after the other, as one array."
-  [arrays]
-  (let [^ints out (segment/make-ints
-                   (reduce + 0 (map #(alength ^ints %) arrays)))]
-    (reduce (fn [at ^ints arr]
-              (segment/copy-ints! arr 0 out at (alength arr))
-              (+ (long at) (alength arr)))
-            0
-            arrays)
-    out))
 
 (defn- starts
   "Where each run of the `counts`, an int array, starts, and where the last
@@ -628,23 +770,47 @@
           (recur (inc i) at))))
     out))
 
+(defn- encoded
+  "The postings `lists` of the terms of a segment of `width` fields, maps
+  of their :docs, :tfs and :positions, as the :term-start and :postings
+  of the segment, those numbered in `unpositioned` without positions."
+  [lists width unpositioned]
+  (let [^Out out   (postings/out)
+        ^Writer w  (postings/writer out width
+                                    (segment/positioned-fields width
+                                                               unpositioned))
+        add-list   (fn [term-start {:keys [^ints docs ^ints tfs positions]}]
+                     (loop [k 0 at 0]
+                       (when (< k (alength docs))
+                         (let [to (+ at (aget tfs k))]
+                           (.add w (aget docs k) positions at to)
+                           (recur (inc k) to))))
+                     (.endTerm w)
+                     (conj! term-start (.size out)))
+        term-start (reduce add-list (transient [0]) lists)]
+    {:term-start (persistent! term-start)
+     :postings   (.toBytes out)}))
+
 (defn- segment-from
   "The segment of the postings `lists` and the doc `records` that the CIFF
-  file named `name` holds, with the documents numbered `deleted` removed,
-  or throws ::malformed."
-  [name lists records deleted]
-  (let [n               (count records)
-        widths          (map #(some-> ^ints (:lengths %) alength) records)
-        width           (or (first widths) 0)
-        terms           (mapv :term lists)
-        last-docs       (keep #(let [^ints docs (:docs %)]
-                                 (when (pos? (alength docs))
-                                   (aget docs (dec (alength docs)))))
-                              lists)
-        ^ints positions (joined-ints (map :positions lists))
-        highest         (areduce positions i m 0 (max m (aget positions i)))
-        ^ints lengths   (segment/make-ints (* n width))
-        bad             #(throw (malformed % {:name name}))]
+  file named `name` holds, without positions in the fields numbered in
+  `unpositioned`, with the documents numbered `deleted` removed, or throws
+  ::malformed."
+  [name lists records unpositioned deleted]
+  (let [n             (count records)
+        widths        (map #(some-> ^ints (:lengths %) alength) records)
+        width         (or (first widths) 0)
+        terms         (mapv :term lists)
+        last-docs     (keep #(let [^ints docs (:docs %)]
+                               (when (pos? (alength docs))
+                                 (aget docs (dec (alength docs)))))
+                            lists)
+        highest       (reduce max -1 (map (fn [{^ints ps :positions}]
+                                            (areduce ps i m -1
+                                                     (max m (aget ps i))))
+                                          lists))
+        ^ints lengths (segment/make-ints (* n width))
+        bad           #(throw (malformed % {:name name}))]
     (cond
       (not= (range n) (map :docid records))
       (bad "The documents of a segment aren't numbered in order")
@@ -659,8 +825,8 @@
       (not (every? #(< % n) last-docs))
       (bad "A posting names a document that the segment doesn't have")
 
-      (and (pos? (alength positions))
-           (<= width (quot highest segment/positions-per-field)))
+      (and (<= 0 highest)
+           (<= width (quot highest postings/positions-per-field)))
       (bad "A position is in a field that the segment doesn't have")
 
       (not= n (count (into #{} (map :id) records)))
@@ -671,18 +837,17 @@
     (doseq [[d {own :lengths}] (map-indexed vector records)]
       (segment/copy-ints! own 0 lengths (* d width) width))
     (segment/segment-of
-     {:ids         (mapv :id records)
-      :stored      (mapv :stored records)
-      :terms       terms
-      :doc-start   (starts (segment/as-ints (mapv #(alength ^ints (:docs %))
-                                                  lists)))
-      :docs        (joined-ints (map :docs lists))
-      :pos-start   (starts (joined-ints (map :tfs lists)))
-      :positions   positions
-      :lengths     lengths
-      :field-stats (segment/field-stats lengths n width)
-      :deleted     (set deleted)
-      :name        name})))
+     (assoc (encoded lists width unpositioned)
+            :ids          (mapv :id records)
+            :stored       (mapv :stored records)
+            :terms        terms
+            :doc-start    (starts (segment/as-ints
+                                   (mapv #(alength ^ints (:docs %)) lists)))
+            :lengths      lengths
+            :field-stats  (segment/field-stats lengths n width)
+            :unpositioned unpositioned
+            :deleted      (set deleted)
+            :name         name))))
 
 (defn- read-segment
   "The segment in `body`, the CIFF file named `name`, with the documents
@@ -705,12 +870,15 @@
                       {:type ::newer-format :name name}))
 
       :else
-      (let [lists   (read-messages! read-list! bs cursor (:lists header))
-            records (read-messages! read-record! bs cursor (:docs header))]
-        (when (< (aget cursor 0) (byte-count bs))
+      (let [unpositioned (:unpositioned header #{})
+            lists        (read-messages! (partial read-list! unpositioned)
+                                         bs cursor (:lists header))
+            records      (read-messages! read-record! bs cursor
+                                         (:docs header))]
+        (when (< (aget cursor 0) (postings/byte-count bs))
           (throw (malformed "A segment goes on after its documents"
                             {:name name})))
-        (segment-from name lists records deleted)))))
+        (segment-from name lists records unpositioned deleted)))))
 
 (defn- read-manifest
   "The manifest in the EDN `body`, text or its UTF-8 bytes, or throws
@@ -718,7 +886,7 @@
   [body]
   (let [text     (if (or (nil? body) (string? body))
                    body
-                   (utf8-text body 0 (byte-count body)))
+                   (utf8-text body 0 (postings/byte-count body)))
         manifest (when (string? text)
                    (read-edn text :manifest))
         fields   (:fields manifest)

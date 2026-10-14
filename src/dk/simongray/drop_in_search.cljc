@@ -22,6 +22,7 @@
   (:refer-clojure :exclude [remove])
   (:require [dk.simongray.drop-in-search.indexing :as indexing]
             [dk.simongray.drop-in-search.matching :as matching]
+            [dk.simongray.drop-in-search.postings :as postings]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.ranking :as ranking]
             [dk.simongray.drop-in-search.scoring :as scoring]
@@ -30,16 +31,32 @@
             [dk.simongray.drop-in-search.terms :as terms])
   #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
 
+(def max-field-terms
+  "The most terms of a field that an index holds, when its
+  :max-field-terms doesn't set fewer for the field."
+  postings/positions-per-field)
+
 (defn index
   "An index of the documents `docs`, or an empty one, with `opts` as the
   defaults of its queries, e.g. the :boosts of its fields, and its
-  :term-fn.
+  :term-fn, :without-positions and :max-field-terms.
 
   The :term-fn is a function of each term of a text that gives the term
   to index and to look for in its place, e.g. a stemmer's, so that posts
   finds post. The other `opts` print with the index, so they must be data,
   but a function can't, so give the :term-fn to restore and
   ciff/read-files again.
+
+  The :without-positions is a set of fields to index without the
+  positions of their words, e.g. long notes, which then take far less
+  memory. A phrase finds its words anywhere in such a field, as Xapian
+  treats a phrase where it has no positions.
+
+  The :max-field-terms is a map of fields to the most terms of each to
+  index, e.g. of long transcripts, as Lucene's LimitTokenCountFilter
+  indexes them: the terms after them are left out, as if the field ended
+  there. A field is indexed up to max-field-terms of its terms by
+  default.
 
   The options of every function are one set, search.queries/option-keys,
   and an option outside it throws, e.g. :limt for :limit."
@@ -50,11 +67,10 @@
   ([docs {:keys [term-fn] :as opts}]
    (search.queries/checked opts)
    (let [defaults (dissoc opts :term-fn)]
-     (cond-> (-> (index)
-                 (indexing/with-term-fn term-fn)
-                 (indexing/added docs)
-                 indexing/compacted)
-       (seq defaults) (assoc :defaults defaults)))))
+     (-> (cond-> (index)
+           (seq defaults) (assoc :defaults defaults))
+         (indexing/with-term-fn term-fn)
+         (indexing/indexed docs)))))
 
 (defn restore
   "The `index` read back from EDN with its arrays made again, which a query
@@ -105,8 +121,9 @@
   "The document `id` of `index` as a map of its :id and :stored, as a
   result of query has them, or nil when the index has none of that id."
   [index id]
-  (when-let [[i no] (get (:docs index) id)]
-    (let [segment (nth (:segments index) i)
+  (when-let [p (get (:docs index) id)]
+    (let [[i no]  (indexing/place-parts p)
+          segment (nth (:segments index) i)
           stored  (if (instance? Segment segment)
                     (.-stored ^Segment segment)
                     (:stored segment))]
@@ -163,6 +180,9 @@
                    boosts)]
     {:segments        segments
      :numbers         numbers
+     :unpositioned    (into #{}
+                            (mapcat #(.-unpositioned ^Segment %))
+                            segments)
      :weights         (scoring/weights numbers
                                        segments
                                        boosts

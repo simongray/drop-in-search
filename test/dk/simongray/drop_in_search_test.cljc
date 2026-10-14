@@ -98,7 +98,12 @@
   (testing "an index printed as EDN and read back"
     (let [thawed (edn/read-string (pr-str idx))]
       (is (= [1 2] (mapv :id (search/query thawed "cloj")))
-          "its arrays come back as vectors, which a query makes arrays")
+          "its arrays come back as vectors and text, which a query reads")
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (search/restore
+                    (update thawed :segments
+                            (partial mapv #(dissoc % :postings)))))
+          "but not those of an earlier version, without postings")
       (is (= idx (search/restore thawed)))
       (is (= (hash idx) (hash (search/restore thawed))) "and hashes the same")
       (is (= [1 2] (mapv :id (search/query (search/restore thawed) "cloj"))))
@@ -270,6 +275,78 @@
         (is (= ::ciff/malformed (read-of [{:name "index.edn" :body "{"}])))
         (is (= ::ciff/newer-format
                (read-of [{:name "index.edn" :body "{:version 99}"}])))))))
+
+(deftest fields-without-positions
+  (let [docs  [{:id 1 :fields {:title "The value of values"
+                               :notes "Values have value"}}
+               {:id 2 :fields {:title "Rust" :notes "of the value"}}
+               {:id 3 :fields {:title "Clojure" :notes "rust"}}]
+        opts  {:without-positions #{:notes}}
+        idx   (search/index docs opts)
+        plain (search/index docs)
+        ids   #(set (map :id (search/query %1 %2)))]
+    (testing "a phrase where a field has positions, and its words where not"
+      (is (= #{1} (ids plain "\"value of\"")))
+      (is (= #{1 2} (ids idx "\"value of\"")))
+      (is (= #{2} (ids idx "notes:\"value of\"")))
+      (is (= #{1} (ids idx "title:\"value of\"")))
+      (is (= #{1 2} (ids idx "value-o")) "the last of its words a prefix"))
+    (is (every? #(= (search/query plain %) (search/query idx %))
+                ["value " "rust | value " "notes:value " "valu" "vlaue "])
+        "words match and score as they do with positions")
+    (is (< (count (:postings (first (:segments (edn/read-string
+                                                 (pr-str idx))))))
+           (count (:postings (first (:segments (edn/read-string
+                                                 (pr-str plain)))))))
+        "and the postings are smaller")
+    (testing "in a snippet and matches? of a text of such a field"
+      (is (search/matches? idx "of the value" "\"value of\"" {:field :notes}))
+      (is (not (search/matches? idx "of the value" "\"value of\""
+                                {:field :title})))
+      (is (= [{:text "of" :match? true}
+              {:text " the "}
+              {:text "value" :match? true}]
+             (search/snippet idx "of the value" "\"value of\""
+                             {:field :notes}))))
+    (testing "as the index changes, and saved"
+      (let [more    {:id 4 :fields {:title "Haskell" :notes "of value"}}
+            changed (-> (reduce search/add idx [more {:id 5 :fields {}}])
+                        (search/remove 5))]
+        (is (= #{1 2 4} (ids changed "\"value of\"")))
+        (is (= changed (search/restore (edn/read-string (pr-str changed)))))
+        (let [{:keys [put]} (ciff/plan changed)
+              read-back     (ciff/read-files put)]
+          (is (= changed read-back))
+          (is (= #{1 2 4} (ids read-back "\"value of\"")))
+          (is (= [2 1] (map #(:version (edn/read-string (:body (peek %))))
+                            [put (:put (ciff/plan plain))]))
+              "in CIFF files of a version that 0.2 doesn't read"))
+        (let [[{:keys [name body]} manifest] (:put (ciff/plan idx))
+              outcome #(read-outcome [manifest {:name name :body %}])]
+          (is (every? #(= ::ciff/malformed (outcome (cut body %)))
+                      (range 1 (inc (size body))))
+              "which don't read when cut short")
+          (is (every? #{:read ::ciff/malformed ::ciff/newer-format}
+                      (map #(outcome (flipped body %)) (range (size body))))
+              "and read or throw one of these with a wrong byte"))))))
+
+(deftest a-cap-on-the-terms-of-a-field
+  (let [doc    #(hash-map :id %1 :fields {:title "Clojure" :notes %2})
+        capped (search/index [(doc 1 "a b c d e") (doc 2 "d a")]
+                             {:max-field-terms {:notes 3}})
+        cut    (search/index [(doc 1 "a b c") (doc 2 "d a")])
+        ids    #(set (map :id (search/query capped %)))]
+    (is (= #{2} (ids "d ")) "the terms after the cap are left out")
+    (is (= #{1 2} (ids "a ")))
+    (is (= #{} (ids "\"c d\"")) "and so is a phrase across it")
+    (is (= (search/query cut "a | c ") (search/query capped "a | c "))
+        "as if the field ended there, its length too")
+    (is (= 1000000 search/max-field-terms) "the cap without the option")
+    (testing "in a snippet and matches? of a text of the field"
+      (is (not (search/matches? capped "a b c d e" "d " {:field :notes})))
+      (is (search/matches? capped "a b c d e" "d " {:field :title}))
+      (is (= [{:text "a b c d e"}]
+             (search/snippet capped "a b c d e" "d " {:field :notes}))))))
 
 (deftest operators
   (is (= [3 1 2] (ids "clojure | tomatoes")))
@@ -538,15 +615,15 @@
     (is (= [] (search/query idx "same" {:limit 0})))
     (is (= (range 100 110)
            (mapv :id (search/query idx "same" {:limit       10
-                                              :filter-pred #(<= 100 (:id %))})))
+                                               :filter-pred #(<= 100 (:id %))})))
         "a filter reads more of the best when too few of them pass")
     (is (= [4 6 8]
            (mapv :id (search/query idx "same" {:limit       3
-                                              :offset      2
-                                              :filter-pred #(even? (:id %))}))))
+                                               :offset      2
+                                               :filter-pred #(even? (:id %))}))))
     (is (= [199 198]
            (mapv :id (search/query idx "same" {:limit   2
-                                              :rank-fn #(- (:id %))})))))
+                                               :rank-fn #(- (:id %))})))))
   (let [idx (search/index (for [id ["b" :a "c" "a" :b 10 2.5]]
                             {:id id :fields {:title "same words"}}))]
     (is (= [2.5 10 :a "b" "c" "a" :b] (mapv :id (search/query idx "same")))

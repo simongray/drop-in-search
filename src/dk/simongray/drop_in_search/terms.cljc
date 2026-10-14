@@ -8,12 +8,14 @@
   typos go under its :typos."
   (:require [clojure.string :as str]
             [dk.simongray.drop-in-search.hits :as hits]
+            [dk.simongray.drop-in-search.indexing :as indexing]
+            [dk.simongray.drop-in-search.postings :as postings
+             #?@(:cljs [:refer [Cursor]])]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.ranking :as ranking]
             [dk.simongray.drop-in-search.scoring :as scoring]
-            [dk.simongray.drop-in-search.segment :as segment
-             #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
+            [dk.simongray.drop-in-search.segment :as segment])
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor])))
 
 (def ^:no-doc fuzzy-weight
   "How much a match with typos weighs before its edits count, as the
@@ -23,18 +25,15 @@
 (defn- prefixed
   "The terms of `segment` that start with `prefix`, in order, as pairs of a
   term and the number of documents that hold it."
-  [^Segment segment prefix]
-  (let [^objects terms (.-terms segment)
-        ^ints starts   (.-doc-start segment)
-        n              (alength terms)]
-    (loop [i   (segment/term-bound terms prefix)
+  [segment prefix]
+  (let [n (segment/term-count segment)]
+    (loop [i   (segment/term-bound segment prefix)
            acc (transient [])]
-      (if (and (< i n)
-               (str/starts-with? (aget terms i) prefix))
-        (recur (inc i)
-               (conj! acc [(aget terms i)
-                           (- (aget starts (inc i)) (aget starts i))]))
-        (persistent! acc)))))
+      (let [term (when (< i n) (segment/term-at segment i))]
+        (if (and term (str/starts-with? term prefix))
+          (recur (inc i)
+                 (conj! acc [term (segment/doc-frequency segment i)]))
+          (persistent! acc))))))
 
 (defn- term-counts
   "The terms of the `segments` that start with `prefix`, as a map of each
@@ -87,41 +86,41 @@
   :prefix? a term that it starts."
   [segments {:keys [term prefix?]}]
   (boolean
-   (some (fn [^Segment segment]
-           (let [^objects terms (.-terms segment)
-                 i              (segment/term-bound terms term)]
-             (and (< i (alength terms))
+   (some (fn [segment]
+           (let [i (segment/term-bound segment term)]
+             (and (< i (segment/term-count segment))
                   (if prefix?
-                    (str/starts-with? (aget terms i) term)
-                    (= term (aget terms i))))))
+                    (str/starts-with? (segment/term-at segment i) term)
+                    (= term (segment/term-at segment i))))))
          segments)))
 
 (defn- distinct-docs
-  "The documents of `segment` with a posting in the `ranges`."
-  [^Segment segment ranges]
-  (let [^ints docs (.-docs segment)
-        ^ints seen (segment/make-ints (segment/size segment))]
-    (doseq [[from to] ranges]
-      (loop [k (long from)]
-        (when (< k (long to))
-          (aset seen (aget docs k) 1)
-          (recur (inc k)))))
+  "The documents of `segment` that hold one of the terms numbered `ts`."
+  [segment ts]
+  (let [^ints seen (segment/make-ints (segment/size segment))]
+    (doseq [t ts]
+      (let [^Cursor c (segment/cursor segment t)]
+        (loop []
+          (let [d (.nextDoc c)]
+            (when-not (== d postings/no-more)
+              (aset seen d 1)
+              (recur))))))
     (areduce seen i n 0 (+ n (aget seen i)))))
 
 (defn- segment-doc-count
   "The documents of `segment` with one of `terms` in a field that the
   `weights` count, or in any field when `weights` is nil."
   [segment weights terms]
-  (let [ranges (segment/term-ranges segment terms)]
+  (let [ts (segment/term-numbers segment terms)]
     (cond
       (and weights (not (scoring/every-field? weights)))
-      (hits/hit-count (scoring/range-frequencies segment weights ranges nil))
+      (hits/hit-count (scoring/term-frequencies segment weights ts nil))
 
-      (< 1 (count ranges))
-      (distinct-docs segment ranges)
+      (< 1 (count ts))
+      (distinct-docs segment ts)
 
       :else
-      (segment/postings-count ranges))))
+      (segment/postings-count segment ts))))
 
 (defn- doc-count
   "The documents of the `segments` with one of `terms` in a field that the
@@ -131,11 +130,12 @@
 
 (defn- leaf-weights
   "The weights of the fields for the term or phrase `leaf`, those of `ctx`
-  with all but its :field left out when it names one."
-  [{:keys [weights numbers]} {:keys [field]}]
-  (if field
-    (scoring/restricted weights (get numbers field))
-    weights))
+  with all but its :field left out when it names one, and all but the
+  fields numbered in its :only when it has those."
+  [{:keys [weights numbers]} {:keys [field only]}]
+  (cond-> weights
+    field (scoring/restricted (get numbers field))
+    only  (scoring/only only)))
 
 ;; A prefix counts as one term of all the terms it starts, with the number
 ;; of documents that hold any of them. Lucene blends the expansions of a
@@ -193,14 +193,37 @@
                                                  (doc-count segments nil %))
                                    places)))))
 
+;; Xapian treats a phrase as its words where it has no positions, from
+;; 0.8.4 on, https://trac.xapian.org/ticket/56, and so a phrase is itself
+;; in the fields with positions, and its words in those without
+(defn- placed-phrase
+  "The phrase `leaf` as a query of the fields of `ctx` that it counts: the
+  phrase in those with positions, or its words in those without, or
+  either."
+  [{:keys [unpositioned] :as ctx} leaf]
+  (let [counted (scoring/counted (leaf-weights ctx leaf))
+        without (filterv #(contains? unpositioned %) counted)
+        words   #(search.queries/map-leaves (fn [w] (assoc w :only without))
+                                            (search.queries/phrase-words leaf))]
+    (cond
+      (empty? without)
+      leaf
+
+      (= (count without) (count counted))
+      (words)
+
+      :else
+      {:or [(assoc leaf :only (remove (set without) counted)) (words)]})))
+
 (defn ^:no-doc prepared
   "The query `node` with what scoring its terms and phrases takes, worked
   out once for all the segments of `ctx`."
   [ctx node]
-  (search.queries/map-leaves #(if (:phrase %)
-                                (prepared-phrase ctx %)
-                                (prepared-term ctx %))
-                             node))
+  (->> node
+       (search.queries/map-leaves #(if (:phrase %) (placed-phrase ctx %) %))
+       (search.queries/map-leaves #(if (:phrase %)
+                                     (prepared-phrase ctx %)
+                                     (prepared-term ctx %)))))
 
 (defn ^:no-doc typos-of
   "The terms of the prepared query `node` that match other terms with
@@ -216,22 +239,18 @@
 
 (defn- holds-term?
   "Whether the document `d` of `segment` holds `term`."
-  [^Segment segment term d]
-  (let [^ints docs (.-docs segment)
-        d          (long d)]
-    (boolean
-     (some (fn [[from to]]
-             (let [to (long to)
-                   k  (segment/seek docs (long from) to d)]
-               (and (< k to) (= d (aget docs k)))))
-           (segment/term-ranges segment [term])))))
+  [segment term d]
+  (boolean
+   (some (fn [t]
+           (= (long d) (.advance ^Cursor (segment/cursor segment t) d)))
+         (segment/term-numbers segment [term]))))
 
 (defn ^:no-doc with-typos
   "The `result` of a query of `index` with :typos, a map of each term of
   `typos` that its document holds only with typos to the near terms that
   it holds, when there are any."
   [index typos {:keys [id] :as result}]
-  (let [[i d]   (get (:docs index) id)
+  (let [[i d]   (indexing/place-parts (get (:docs index) id))
         segment (nth (:segments index) i)
         holds?  #(holds-term? segment % d)
         held    (into {}

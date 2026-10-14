@@ -167,6 +167,41 @@ post. A function can't be saved with an index, so give the same
 back. Without it, the words of new documents and of queries aren't
 stemmed, while those already in the index are.
 
+Memory
+------
+
+An index keeps its postings, the documents and positions of each word,
+compressed as
+[Lucene's postings format](https://lucene.apache.org/core/10_0_0/core/org/apache/lucene/codecs/lucene912/Lucene912PostingsFormat.html)
+does: in blocks of 128 documents, each with the skip data that lets a
+query pass it, and mostly a byte for each number. For 152,006 podcast
+shows and episodes, with 23 million words in their fields, measured on
+an Apple M1 with JDK 24 and Node 24 on 14 October 2026:
+
+| | Heap | Stored data | Build |
+|---|---|---|---|
+| JVM | 209 MB | 78 MB | 13 s |
+| Node | 317 MB | 190 MB | 37 s |
+
+The postings take 63 MB of each, and the ids and the terms most of the
+rest. The stored data of six fields to a document takes the most in
+Node, so store only what a list of results shows, e.g. a title and an
+id to find the rest by.
+
+To save more, index long fields without the positions of their words,
+e.g. the notes of an episode, by giving `search/index` a set of them as
+`:without-positions`. Most of the postings are positions, and a word in
+such a field still counts as often as it occurs. A phrase then finds its
+words anywhere in the field, as
+[Xapian](https://trac.xapian.org/ticket/56) treats a phrase where it has
+no positions, and stays a phrase in the other fields. The CIFF files of
+such an index are of a newer version, which 0.2 doesn't read.
+
+You can also index only the first words of a long field, e.g. with
+`{:transcript 10000}` as `:max-field-terms`, as Lucene's
+[LimitTokenCountFilter](https://lucene.apache.org/core/9_11_1/analysis/common/org/apache/lucene/analysis/miscellaneous/LimitTokenCountFilter.html)
+does. The words after them are left out, as if the field ended there.
+
 Saving an index
 ---------------
 
@@ -180,7 +215,7 @@ An index prints as EDN, and `search/restore` reads it back:
 (search/restore (edn/read-string saved))
 ```
 
-A large index is faster to save in the
+A large index is better saved in the
 [Common Index File Format](https://github.com/osirrc/ciff) (CIFF), with
 the `dk.simongray.drop-in-search.ciff` namespace, required as `ciff`.
 Then `ciff/plan` gives you a manifest in EDN and a file for each
@@ -190,16 +225,16 @@ file is named after what it holds, so a change only writes the segments
 that are new. Keep the files in a folder, in IndexedDB or anywhere else,
 and read them back with `ciff/read-files`.
 
-Switch to CIFF once reading the EDN back takes too long. For 20,000
-posts of 120 words, measured on an Apple M1 with JDK 24 and Node 24 on
-12 October 2026:
+Switch to CIFF once writing the whole index after each change takes too
+long, or reading the EDN back in JavaScript does. For the first 20,000
+of the podcast shows and episodes above:
 
 | | Size | Write | Read |
 |---|---|---|---|
-| EDN on the JVM | 45 MB | 0.6 s | 1.9 s |
-| CIFF on the JVM | 19 MB | 0.2 s | 0.2 s |
-| EDN in Node | 44 MB | 2.2 s | 5.3 s |
-| CIFF in Node | 18 MB | 0.7 s | 0.5 s |
+| EDN on the JVM | 22 MB | 0.5 s | 0.4 s |
+| CIFF on the JVM | 25 MB | 0.6 s | 0.4 s |
+| EDN in Node | 22 MB | 0.4 s | 2.4 s |
+| CIFF in Node | 25 MB | 0.9 s | 1.4 s |
 
 A CIFF index records the version of its format, and `ciff/read-files`
 throws with the `:type` `:dk.simongray.drop-in-search.ciff/newer-format`
@@ -247,6 +282,7 @@ npm install                           # once, for ClojureScript
 clojure -M:cljs compile test          # the tests in Node
 clojure -M:cljs compile browser-test  # the tests in a browser
 node test/browser-run.mjs             # run them in a headless Chrome
+clojure -M:bench corpus.edn           # measure an index of a corpus
 ```
 
 License
