@@ -152,13 +152,17 @@
 ;; - lengths, the positions of each field of each document, width of them
 ;;   to a document, and field-stats, the documents with each field and
 ;;   their positions in all, by field number
+;; - unpositioned, the numbers of the fields without positions, and
+;;   positioned, an array of a 1 for each field with them and a 0 for
+;;   each without
 ;; - deleted, the numbers of the documents that are removed
 ;; - name, that of its file in a store, which an equal segment can have
 ;;   another of
 (declare contents segment-data)
 
 (deftype Segment [ids stored terms doc-start term-start postings lengths
-                  ^long width field-stats deleted name]
+                  ^long width field-stats unpositioned positioned deleted
+                  name]
   #?@(:clj
       [Object
        (equals [this other]
@@ -190,16 +194,17 @@
   "The fields of `segment` as a map, with its :name as it is, a delay
   until something needs it."
   [^Segment segment]
-  {:ids         (.-ids segment)
-   :stored      (.-stored segment)
-   :terms       (.-terms segment)
-   :doc-start   (.-doc-start segment)
-   :term-start  (.-term-start segment)
-   :postings    (.-postings segment)
-   :lengths     (.-lengths segment)
-   :field-stats (.-field-stats segment)
-   :deleted     (.-deleted segment)
-   :name        (.-name segment)})
+  {:ids          (.-ids segment)
+   :stored       (.-stored segment)
+   :terms        (.-terms segment)
+   :doc-start    (.-doc-start segment)
+   :term-start   (.-term-start segment)
+   :postings     (.-postings segment)
+   :lengths      (.-lengths segment)
+   :field-stats  (.-field-stats segment)
+   :unpositioned (.-unpositioned segment)
+   :deleted      (.-deleted segment)
+   :name         (.-name segment)})
 
 (defn- contents
   "What `segment` holds as plain data, a map of its fields but its name,
@@ -260,10 +265,11 @@
 (defn- content-name
   "The name of the file of a segment with the parts in `m`, from a hash of
   all that it holds, so that one that holds anything else has another."
-  [{:keys [ids stored terms doc-start term-start postings lengths]}]
+  [{:keys [ids stored terms doc-start term-start postings lengths
+           unpositioned]}]
   (let [arrays [doc-start term-start lengths
                 (as-ints (mapv hash terms))
-                (as-ints [(hash ids) (hash stored)])]
+                (as-ints [(hash ids) (hash stored) (hash unpositioned)])]
         lane   (fn [reversed?]
                  (fnv-bytes (reduce #(fnv-ints %1 %2 reversed?)
                                     2166136261
@@ -272,24 +278,34 @@
                             reversed?))]
     (str "segment-" (hex (lane false)) (hex (lane true)) ".ciff")))
 
+(defn ^:no-doc positioned-fields
+  "An array of a 1 for each of `width` fields, and a 0 for those numbered
+  in `unpositioned`, which have no positions."
+  [width unpositioned]
+  (let [^ints flags (make-ints width)]
+    (dotimes [no width]
+      (aset flags no (if (contains? unpositioned no) 0 1)))
+    flags))
+
 (defn ^:no-doc segment-of
   "The segment of `m`, a map of its fields, whose arrays can be vectors
   and its postings base64 text. Without a :name, its name is a hash of
   what it holds, worked out once it's needed."
   [{:keys [ids stored terms doc-start term-start postings lengths
-           field-stats deleted name]
+           field-stats unpositioned deleted name]
     :as   m}]
   (when-not postings
     (throw (ex-info (str "A segment has no postings, e.g. one printed by an"
                          " earlier version, so index its documents again")
                     {:keys (set (keys m))})))
-  (let [arrays {:ids        (vec ids)
-                :stored     (vec stored)
-                :terms      (as-objects terms)
-                :doc-start  (as-ints doc-start)
-                :term-start (as-ints term-start)
-                :postings   (as-bytes postings)
-                :lengths    (as-ints lengths)}]
+  (let [arrays {:ids          (vec ids)
+                :stored       (vec stored)
+                :terms        (as-objects terms)
+                :doc-start    (as-ints doc-start)
+                :term-start   (as-ints term-start)
+                :postings     (as-bytes postings)
+                :lengths      (as-ints lengths)
+                :unpositioned (set unpositioned)}]
     (->Segment (:ids arrays)
                (:stored arrays)
                (:terms arrays)
@@ -299,6 +315,8 @@
                (:lengths arrays)
                (count field-stats)
                (vec field-stats)
+               (:unpositioned arrays)
+               (positioned-fields (count field-stats) (:unpositioned arrays))
                (set deleted)
                (or name (delay (content-name arrays))))))
 
@@ -338,7 +356,8 @@
   (postings/cursor (.-postings segment)
                    (aget ^ints (.-term-start segment) (int t))
                    (doc-frequency segment t)
-                   (.-width segment)))
+                   (.-width segment)
+                   (.-positioned segment)))
 
 ;; Lucene's ConjunctionDISI: the postings of a term and the candidates are
 ;; both in order, so they meet in one walk, each side skipping ahead
@@ -516,14 +535,17 @@
 (defn ^:no-doc built
   "A segment of the analyzed documents `entries`, maps of :id, :stored and
   :fields of terms by position, whose fields have the `numbers` of an
-  index."
-  [numbers entries]
+  index, and of which those numbered in `unpositioned` have no
+  positions."
+  [numbers unpositioned entries]
   (let [postings         (postings-of numbers entries)
         terms            (to-array (map detached (sort (keys postings))))
         n                (count entries)
         width            (count numbers)
         ^Out out         (postings/out)
-        w                (postings/writer out width)
+        w                (postings/writer out width
+                                          (positioned-fields width
+                                                             unpositioned))
         ^ints lengths    (make-ints (* n width))
         ^ints doc-start  (make-ints (inc (alength terms)))
         ^ints term-start (make-ints (inc (alength terms)))]
@@ -536,15 +558,16 @@
     (doseq [[no {:keys [fields]}] (map-indexed vector entries)
             [field terms]         fields]
       (aset lengths (+ (* no width) (get numbers field)) (int (count terms))))
-    (segment-of {:ids         (mapv :id entries)
-                 :stored      (mapv :stored entries)
-                 :terms       terms
-                 :doc-start   doc-start
-                 :term-start  term-start
-                 :postings    (.toBytes out)
-                 :lengths     lengths
-                 :field-stats (field-stats lengths n width)
-                 :deleted     #{}})))
+    (segment-of {:ids          (mapv :id entries)
+                 :stored       (mapv :stored entries)
+                 :terms        terms
+                 :doc-start    doc-start
+                 :term-start   term-start
+                 :postings     (.toBytes out)
+                 :lengths      lengths
+                 :field-stats  (field-stats lengths n width)
+                 :unpositioned unpositioned
+                 :deleted      #{}})))
 
 (defn- numbers-from
   "An array of the new number of each document of `segment` in a merged
@@ -632,14 +655,17 @@
     lengths))
 
 ;; A merge of sorted lists: each segment has a cursor at its next term,
-;; and the least of those terms comes next
+;; and the least of those terms comes next. The fields without positions
+;; are those of the index, so they're the same in every segment of it,
+;; but for the fields that a segment doesn't have
 (defn- merged-postings
   "The terms of the `segments` and their postings of the documents that
   their `new-numbers` keep, as the parts of one segment of `width`
-  fields."
-  [segments new-numbers width]
+  fields, those numbered in `unpositioned` without positions."
+  [segments new-numbers width unpositioned]
   (let [^Out out      (postings/out)
-        w             (postings/writer out width)
+        w             (postings/writer out width
+                                       (positioned-fields width unpositioned))
         ^ints cursors (make-ints (count segments))
         copy-term!    (fn [term k i]
                         (let [^Segment segment (nth segments i)
@@ -675,19 +701,22 @@
   "One segment of the `segments` in order, without their documents that
   are removed."
   [segments]
-  (let [segments    (vec segments)
-        new-numbers (renumbered segments)
-        width       (reduce max 0 (map #(.-width ^Segment %) segments))
-        kept        (fn [k]
-                      (into []
-                            (mapcat #(without-removed (k (parts %))
-                                                      (.-deleted ^Segment %)))
-                            segments))
-        ids         (kept :ids)
-        lengths     (merged-lengths segments new-numbers (count ids) width)]
-    (segment-of (assoc (merged-postings segments new-numbers width)
-                       :ids         ids
-                       :stored      (kept :stored)
-                       :lengths     lengths
-                       :field-stats (field-stats lengths (count ids) width)
-                       :deleted     #{}))))
+  (let [segments     (vec segments)
+        new-numbers  (renumbered segments)
+        width        (reduce max 0 (map #(.-width ^Segment %) segments))
+        unpositioned (into #{} (mapcat #(.-unpositioned ^Segment %)) segments)
+        kept         (fn [k]
+                       (into []
+                             (mapcat #(without-removed (k (parts %))
+                                                       (.-deleted ^Segment %)))
+                             segments))
+        ids          (kept :ids)
+        lengths      (merged-lengths segments new-numbers (count ids) width)]
+    (segment-of (assoc (merged-postings segments new-numbers width
+                                        unpositioned)
+                       :ids          ids
+                       :stored       (kept :stored)
+                       :lengths      lengths
+                       :field-stats  (field-stats lengths (count ids) width)
+                       :unpositioned unpositioned
+                       :deleted      #{}))))

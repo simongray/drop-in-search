@@ -139,11 +139,17 @@
   "The `index` with a new segment of the documents `docs`, the terms of
   whose fields `f` maps, if given."
   [index f docs]
-  (let [entries  (mapv #(update % :fields segment/analyzed-fields f) docs)
-        numbers  (reduce segment/numbered (:fields index) (map :fields entries))
-        segments (:segments index)]
+  (let [entries      (mapv #(update % :fields segment/analyzed-fields f) docs)
+        numbers      (reduce segment/numbered
+                             (:fields index)
+                             (map :fields entries))
+        unpositioned (into #{}
+                           (keep numbers)
+                           (:without-positions (:defaults index)))
+        segments     (:segments index)]
     (-> (assoc index :fields numbers)
-        (with-segments (conj segments (segment/built numbers entries))
+        (with-segments (conj segments
+                             (segment/built numbers unpositioned entries))
                        (count segments)))))
 
 ;; A segment is built of at most 4096 documents at once, so that building

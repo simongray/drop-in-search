@@ -12,7 +12,7 @@
   - the bytes of its postings, and of their positions
   - its postings, each the gap from the document before and its runs
   - the positions of each run in turn, the first in its field and the
-    rest as gaps
+    rest as gaps, but none of a run in a field without positions
 
   Each number is a VInt, as in the VInt blocks of Lucene99PostingsFormat.
   A run is one VInt of the gap from the field of the run before, whether
@@ -185,13 +185,14 @@
 ;; Each block is written into bytes of its own first, since its skip data
 ;; goes in front of it
 (deftype Writer [^Out out ^Out block-postings ^Out block-positions
-                 ^ints fields ^ints counts
+                 ^ints positioned ^ints fields ^ints counts
                  ^:unsynchronized-mutable ^:mutable ^long prev
                  ^:unsynchronized-mutable ^:mutable ^long base
                  ^:unsynchronized-mutable ^:mutable ^long n]
   #?(:clj IWriter :cljs Object)
   ;; the posting of the document `doc` at the positions of the index in
-  ;; order in `positions` from `from` to `to`
+  ;; order in `positions` from `from` to `to`, those of the fields without
+  ;; positions only counted
   (add [this doc positions from to]
     (let [^ints positions positions
           runs            (.runsOf this positions from to)]
@@ -205,12 +206,13 @@
                       (+ (* 16 (- f field 1)) more (dec (min c 8))))
             (when (<= 8 c)
               (.putVInt block-postings (- c 8)))
-            (let [offset (* f positions-per-field)]
-              (loop [k 0 q 0]
-                (when (< k c)
-                  (let [p (- (aget positions (+ j k)) offset)]
-                    (.putVInt block-positions (- p q))
-                    (recur (inc k) p)))))
+            (when (pos? (aget positioned f))
+              (let [offset (* f positions-per-field)]
+                (loop [k 0 q 0]
+                  (when (< k c)
+                    (let [p (- (aget positions (+ j k)) offset)]
+                      (.putVInt block-positions (- p q))
+                      (recur (inc k) p))))))
             (recur (inc r) f (+ j c)))))
       (.added this doc)))
 
@@ -264,10 +266,11 @@
 
 (defn ^:no-doc writer
   "A writer of the postings of terms of a segment of `width` fields, one
-  term after another, into `out`, bytes to write to."
-  [out width]
+  term after another, into `out`, bytes to write to. The `positioned`
+  array has a 1 for each field with positions, and a 0 for one without."
+  [out width positioned]
   (->Writer out (->Out (make-bytes 1024) 0) (->Out (make-bytes 1024) 0)
-            (make-ints width) (make-ints width) 0 0 0))
+            positioned (make-ints width) (make-ints width) 0 0 0))
 
 #?(:clj
    (definterface ICursor
@@ -287,7 +290,7 @@
 ;; The positions of a posting are read only when they're asked for, so a
 ;; cursor counts those it passes, to skip them when it must, as Lucene's
 ;; posPendingCount does
-(deftype Cursor [buf ^ints fields ^ints counts
+(deftype Cursor [buf ^ints positioned ^ints fields ^ints counts
                  ^:unsynchronized-mutable ^:mutable ^long at
                  ^:unsynchronized-mutable ^:mutable ^long left
                  ^:unsynchronized-mutable ^:mutable ^long block-left
@@ -344,8 +347,8 @@
               (do (set! doc no-more)
                   doc))))))
 
-  ;; the runs of the posting, the field and the count of each, and all
-  ;; the positions
+  ;; the runs of the posting, the field and the count of each, and the
+  ;; count of them all
   (runs [_]
     n-runs)
 
@@ -358,8 +361,9 @@
   (tf [_]
     term-freq)
 
-  ;; the positions of the posting as those of the index, in an array of
-  ;; their own, or into `out` from `at`, giving where they end there, once
+  ;; the positions of the posting in the fields with positions, as those
+  ;; of the index, in an array of their own, or into `out` from `at`,
+  ;; giving where they end there, once
   (positions [this]
     (let [out (make-ints unread)]
       (.readPositions this out 0)
@@ -376,7 +380,8 @@
               (set! unread 0)
               j)
 
-          (== k (aget counts r))
+          (or (== k (aget counts r))
+              (zero? (aget positioned (aget fields r))))
           (recur i (inc r) 0 j 0)
 
           :else
@@ -415,22 +420,24 @@
     (set! block-left (min block-size left)))
 
   (readRuns [this]
-    (loop [r 0 f -1 total 0]
-      (let [code (.readVInt this)
-            f    (+ f 1 (bit-shift-right code 4))
-            c    (inc (bit-and code 7))
-            c    (if (== 8 c) (+ c (.readVInt this)) c)]
+    (loop [r 0 f -1 total 0 placed 0]
+      (let [code   (.readVInt this)
+            f      (+ f 1 (bit-shift-right code 4))
+            c      (inc (bit-and code 7))
+            c      (if (== 8 c) (+ c (.readVInt this)) c)
+            placed (+ placed (* c (aget positioned f)))]
         (aset fields r (int f))
         (aset counts r (int c))
         (if (pos? (bit-and code 8))
-          (recur (inc r) f (+ total c))
+          (recur (inc r) f (+ total c) placed)
           (do (set! n-runs (inc r))
               (set! term-freq (+ total c))
-              (set! unread term-freq)))))))
+              (set! unread placed)))))))
 
 (defn ^:no-doc cursor
   "A cursor before the first of the `n` postings of a term that start at
-  `at` of the bytes `bs`, of a segment of `width` fields."
-  [bs at n width]
-  (->Cursor bs (make-ints width) (make-ints width)
+  `at` of the bytes `bs`, of a segment of `width` fields, with a 1 in the
+  array `positioned` for each with positions, and a 0 for one without."
+  [bs at n width positioned]
+  (->Cursor bs positioned (make-ints width) (make-ints width)
             at n 0 0 at 0 -1 0 0 0 0 0 0))

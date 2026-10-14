@@ -135,11 +135,12 @@
 
 (defn- leaf-weights
   "The weights of the fields for the term or phrase `leaf`, those of `ctx`
-  with all but its :field left out when it names one."
-  [{:keys [weights numbers]} {:keys [field]}]
-  (if field
-    (scoring/restricted weights (get numbers field))
-    weights))
+  with all but its :field left out when it names one, and all but the
+  fields numbered in its :only when it has those."
+  [{:keys [weights numbers]} {:keys [field only]}]
+  (cond-> weights
+    field (scoring/restricted (get numbers field))
+    only  (scoring/only only)))
 
 ;; A prefix counts as one term of all the terms it starts, with the number
 ;; of documents that hold any of them. Lucene blends the expansions of a
@@ -197,14 +198,37 @@
                                                  (doc-count segments nil %))
                                    places)))))
 
+;; Xapian treats a phrase as its words where it has no positions, from
+;; 0.8.4 on, https://trac.xapian.org/ticket/56, and so a phrase is itself
+;; in the fields with positions, and its words in those without
+(defn- placed-phrase
+  "The phrase `leaf` as a query of the fields of `ctx` that it counts: the
+  phrase in those with positions, or its words in those without, or
+  either."
+  [{:keys [unpositioned] :as ctx} leaf]
+  (let [counted (scoring/counted (leaf-weights ctx leaf))
+        without (filterv #(contains? unpositioned %) counted)
+        words   #(search.queries/map-leaves (fn [w] (assoc w :only without))
+                                            (search.queries/phrase-words leaf))]
+    (cond
+      (empty? without)
+      leaf
+
+      (= (count without) (count counted))
+      (words)
+
+      :else
+      {:or [(assoc leaf :only (remove (set without) counted)) (words)]})))
+
 (defn ^:no-doc prepared
   "The query `node` with what scoring its terms and phrases takes, worked
   out once for all the segments of `ctx`."
   [ctx node]
-  (search.queries/map-leaves #(if (:phrase %)
-                                (prepared-phrase ctx %)
-                                (prepared-term ctx %))
-                             node))
+  (->> node
+       (search.queries/map-leaves #(if (:phrase %) (placed-phrase ctx %) %))
+       (search.queries/map-leaves #(if (:phrase %)
+                                     (prepared-phrase ctx %)
+                                     (prepared-term ctx %)))))
 
 (defn ^:no-doc typos-of
   "The terms of the prepared query `node` that match other terms with

@@ -185,6 +185,15 @@ an Apple M1 with JDK 24 and Node 24 on 14 October 2026:
 
 The rest of the heap holds the terms, the ids and the stored data.
 
+To save more, index long fields without the positions of their words,
+e.g. the notes of an episode, by giving `search/index` a set of them as
+`:without-positions`. Most of the postings are positions, and a word in
+such a field still counts as often as it occurs. A phrase then finds its
+words anywhere in the field, as
+[Xapian](https://trac.xapian.org/ticket/56) treats a phrase where it has
+no positions, and stays a phrase in the other fields. The CIFF files of
+such an index are of a newer version, which 0.2 doesn't read.
+
 Saving an index
 ---------------
 

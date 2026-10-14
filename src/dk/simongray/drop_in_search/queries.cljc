@@ -47,7 +47,7 @@
   #{:aliases :syntax :operator :prefix? :min-prefix :max-terms :max-depth
     :term-fn :fuzzy :typo-lengths :known-pred :width :field :limit :offset
     :boosts :fields :k1 :b :filter-pred :rank-fn :max-completions
-    :max-expansions})
+    :max-expansions :without-positions})
 
 (defn ^:no-doc checked
   "The `opts` as they are, or a throw when they aren't a map, or hold an
@@ -321,6 +321,21 @@
     {op (into []
               (mapcat #(if (contains? % op) (get % op) [%]))
               queries)}))
+
+(defn ^:no-doc phrase-words
+  "The words of the phrase `leaf` as terms, all of which a match holds, in
+  its :field if it names one, and the last a prefix if the phrase's is."
+  [{:keys [phrase prefix? field] :as leaf}]
+  (combine :and
+           (into []
+                 (map-indexed (fn [i term]
+                                (cond-> {:term term}
+                                  field
+                                  (assoc :field field)
+
+                                  (and prefix? (= i (dec (count phrase))))
+                                  (assoc :prefix? true))))
+                 phrase)))
 
 (defn- operand-start?
   [lexeme]
@@ -648,6 +663,15 @@
       (nil? (:field leaf))
       (= field (:field leaf))))
 
+(defn- text-query
+  "The query `q` as data, read with the `opts` of snippet, as an index
+  matches it in a text of their :field: with each phrase as its words
+  when the field is one of :without-positions."
+  [q {:keys [field without-positions] :as opts}]
+  (cond->> (fuzzy-query q opts)
+    (contains? without-positions field)
+    (map-leaves #(if (:phrase %) (phrase-words %) %))))
+
 (defn- merged
   "The `hits`, maps of :start and :end in order, with those that overlap
   or touch made one, e.g. the pairs of characters of a run of Chinese."
@@ -735,14 +759,16 @@
     {:term \"clojure\"}, that tells whether the documents of an index
     hold it; without it, no word is unknown
   - :field, the field of a document that the text is from, so that only
-    the words of the query in that field or in none match"
+    the words of the query in that field or in none match
+  - :without-positions, the fields that an index has no positions of, in
+    whose text a phrase matches its words anywhere, as in the index"
   ([text q]
    (snippet text q {}))
   ([text q {:keys [width term-fn field] :or {width 160} :as opts}]
    (checked opts)
    (let [text       (analysis/text text)
          spans      (analysis/mapped-spans term-fn (analysis/spans text))
-         query      (fuzzy-query q opts)
+         query      (text-query q opts)
          found      (hits spans (filterv #(in-field? field %) (leaves query)))
          length     (count text)
          [from to]  (:window (window spans found width length))
@@ -806,7 +832,7 @@
 
                     :else
                     (contains? @terms term)))]
-     (satisfied? found? (fuzzy-query q opts)))))
+     (satisfied? found? (text-query q opts)))))
 
 (comment
   (parse "title:clojure -rust | \"value for va" {:aliases {"title" :title}})

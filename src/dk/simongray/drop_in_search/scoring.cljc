@@ -73,6 +73,21 @@
         (aset only (int no) (if (zero? w) 1.0 w))))
     (->Weights only (.-a weights) (.-c weights))))
 
+(defn ^:no-doc only
+  "The `weights` with every field but those numbered in `nos` left out."
+  [^Weights weights nos]
+  (let [^doubles weight (.-weight weights)
+        ^doubles kept   (segment/make-doubles (alength weight))]
+    (doseq [no nos]
+      (aset kept (int no) (aget weight (int no))))
+    (->Weights kept (.-a weights) (.-c weights))))
+
+(defn ^:no-doc counted
+  "The numbers of the fields that the `weights` count."
+  [^Weights weights]
+  (let [^doubles weight (.-weight weights)]
+    (filterv #(pos? (aget weight (int %))) (range (alength weight)))))
+
 (defn ^:no-doc every-field?
   "Whether the `weights` count every field."
   [^Weights weights]

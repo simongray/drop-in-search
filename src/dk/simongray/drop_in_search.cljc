@@ -33,13 +33,18 @@
 (defn index
   "An index of the documents `docs`, or an empty one, with `opts` as the
   defaults of its queries, e.g. the :boosts of its fields, and its
-  :term-fn.
+  :term-fn and :without-positions.
 
   The :term-fn is a function of each term of a text that gives the term
   to index and to look for in its place, e.g. a stemmer's, so that posts
   finds post. The other `opts` print with the index, so they must be data,
   but a function can't, so give the :term-fn to restore and
   ciff/read-files again.
+
+  The :without-positions is a set of fields to index without the
+  positions of their words, e.g. long notes, which then take far less
+  memory. A phrase finds its words anywhere in such a field, as Xapian
+  treats a phrase where it has no positions.
 
   The options of every function are one set, search.queries/option-keys,
   and an option outside it throws, e.g. :limt for :limit."
@@ -50,10 +55,10 @@
   ([docs {:keys [term-fn] :as opts}]
    (search.queries/checked opts)
    (let [defaults (dissoc opts :term-fn)]
-     (cond-> (-> (index)
-                 (indexing/with-term-fn term-fn)
-                 (indexing/indexed docs))
-       (seq defaults) (assoc :defaults defaults)))))
+     (-> (cond-> (index)
+           (seq defaults) (assoc :defaults defaults))
+         (indexing/with-term-fn term-fn)
+         (indexing/indexed docs)))))
 
 (defn restore
   "The `index` read back from EDN with its arrays made again, which a query
@@ -162,6 +167,9 @@
                    boosts)]
     {:segments        segments
      :numbers         numbers
+     :unpositioned    (into #{}
+                            (mapcat #(.-unpositioned ^Segment %))
+                            segments)
      :weights         (scoring/weights numbers
                                        segments
                                        boosts
