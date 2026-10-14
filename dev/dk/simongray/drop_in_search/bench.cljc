@@ -14,15 +14,20 @@
       node --expose-gc --max-old-space-size=8192 target/bench.js \\
         corpus.edn [results.edn]
 
+  With memory in place of the corpus, then the corpus, it prints the heap
+  of each part of the index instead, which the load of a machine doesn't
+  change as it changes the times.
+
   Measure Node with a release build, as an app runs it, since the
   functions of a build for development are several times slower."
   (:require #?(:clj [clojure.edn :as edn] :cljs [cljs.reader :as edn])
             #?(:clj [clojure.java.io :as io])
             [clojure.string :as str]
-            #?(:cljs [clojure.walk :as walk])
+            [clojure.walk :as walk]
             [dk.simongray.drop-in-search :as search]
             [dk.simongray.drop-in-search.analysis :as analysis]
             [dk.simongray.drop-in-search.ciff :as ciff]
+            [dk.simongray.drop-in-search.segment :as segment]
             #?(:cljs ["fs" :as fs]))
   #?(:clj (:import [java.lang.management ManagementFactory])))
 
@@ -42,22 +47,37 @@
    "podcsat "
    "title:interview "])
 
-;; V8 keeps a substring of 13 characters or more as a slice of the string
-;; it's from, so each string read from the corpus is copied, lest a value
-;; of a document hold on to the whole corpus
+;; A document read from EDN differs from one made in code, so each is made
+;; again as code makes it: a reader builds a vector as a transient, which
+;; leaves it an empty node of 32 for its root, while a literal shares one.
+;; In JavaScript, a reader makes a keyword anew each time, while code
+;; shares one, and V8 keeps a substring of 13 characters or more as a
+;; slice of the string it's from, which would hold on to the whole corpus
+(def keywords
+  "The keywords of the documents read, one of each, as code shares them."
+  (atom {}))
+
+(defn- as-in-code
+  "The value `x` of a document read from EDN as code would make it."
+  [x]
+  (cond
+    (vector? x)  (apply vector x)
+    (keyword? x) #?(:clj  x
+                    :cljs (or (get @keywords x)
+                              (do (swap! keywords assoc x x) x)))
+    (string? x)  #?(:clj  x
+                    :cljs (js/JSON.parse (js/JSON.stringify x)))
+    :else        x))
+
 (defn read-corpus
   "The documents of the corpus at `path`, one in EDN to a line."
   [path]
-  #?(:clj  (with-open [r (io/reader path)]
-             (into [] (map edn/read-string) (line-seq r)))
-     :cljs (into []
-                 (comp (remove str/blank?)
-                       (map edn/read-string)
-                       (map (partial walk/postwalk
-                                     #(if (string? %)
-                                        (js/JSON.parse (js/JSON.stringify %))
-                                        %))))
-                 (str/split-lines (.readFileSync fs path "utf8")))))
+  (let [xf (comp (remove str/blank?)
+                 (map edn/read-string)
+                 (map (partial walk/postwalk as-in-code)))]
+    #?(:clj  (with-open [r (io/reader path)]
+               (into [] xf (line-seq r)))
+       :cljs (into [] xf (str/split-lines (.readFileSync fs path "utf8"))))))
 
 ;; V8 keeps the contents of typed arrays outside its heap
 (defn heap-used
@@ -319,20 +339,62 @@
       (check! results (concat (map #(outcome idx %) probes)
                               (snippets idx texts))))))
 
+(defn- stripped
+  "The `idx` with each of its segments made again of its parts as `f`, a
+  function of a map of them, changes them."
+  [idx f]
+  (update idx :segments
+          (partial mapv #(segment/segment-of
+                          (f (assoc (segment/parts %) :name "stripped"))))))
+
+(defn memory
+  "Print the heap that each part of an index of the corpus at `path`
+  holds, by taking them away one at a time: what is stored, the map of
+  ids, the ids, the terms, the postings and their arrays, and the rest."
+  [path]
+  (let [base  (heap-used)
+        idx   (atom (search/index (read-corpus path) opts))
+        parts [["stored   " #(stripped % (fn [m] (assoc m :stored [])))]
+               ["map of ids" #(assoc % :docs {})]
+               ["ids      " #(stripped % (fn [m] (assoc m :ids [])))]
+               ["terms    " #(stripped % (fn [m]
+                                           (assoc m
+                                                  :term-text  ""
+                                                  :text-start [0])))]
+               ["postings " #(stripped % (fn [m]
+                                           (assoc m
+                                                  :postings   []
+                                                  :doc-start  []
+                                                  :term-start []
+                                                  :lengths    [])))]]]
+    (println "heap      " (mb (- (heap-used) base)))
+    (reduce (fn [before [part f]]
+              (swap! idx f)
+              (let [after (heap-used)]
+                (println "  " part (mb (- before after)))
+                after))
+            (heap-used)
+            parts)
+    (println "   the rest " (mb (- (heap-used) base)))))
+
+(defn- main*
+  [[path results]]
+  (if (= "memory" path)
+    (memory (or results "dev-resources/corpus/podcast-documents.edn"))
+    (run (or path "dev-resources/corpus/podcast-documents.edn") results)))
+
 #?(:clj
    (defn -main
-     "Measure an index of the corpus at `path`, and check its results with
-     the file at `results`, if given."
-     [& [path results]]
-     (run (or path "dev-resources/corpus/podcast-documents.edn") results)
+     "Measure an index of the corpus, with the `args` of the namespace."
+     [& args]
+     (main* args)
      (shutdown-agents))
 
    :cljs
    (defn main
-     "Measure an index of the corpus at `path`, and check its results with
-     the file at `results`, if given."
-     [& [path results]]
-     (run (or path "dev-resources/corpus/podcast-documents.edn") results)))
+     "Measure an index of the corpus, with the `args` of the namespace."
+     [& args]
+     (main* args)))
 
 (comment
   (def docs (read-corpus "dev-resources/corpus/podcast-documents.edn"))
