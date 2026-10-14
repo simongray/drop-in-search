@@ -9,4 +9,8 @@
           :browser-test {:target    :browser-test
                          :test-dir  "target/browser-test"
                          :ns-regexp "-test$"
-                         :runner-ns dk.simongray.drop-in-search.browser-runner}}}
+                         :runner-ns dk.simongray.drop-in-search.browser-runner}
+          ;; clojure -M:cljs compile bench, then see dev/
+          :bench        {:target    :node-script
+                         :output-to "target/bench.js"
+                         :main      dk.simongray.drop-in-search.bench/main}}}

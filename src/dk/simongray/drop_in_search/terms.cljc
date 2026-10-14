@@ -8,12 +8,15 @@
   typos go under its :typos."
   (:require [clojure.string :as str]
             [dk.simongray.drop-in-search.hits :as hits]
+            [dk.simongray.drop-in-search.postings :as postings
+             #?@(:cljs [:refer [Cursor]])]
             [dk.simongray.drop-in-search.queries :as search.queries]
             [dk.simongray.drop-in-search.ranking :as ranking]
             [dk.simongray.drop-in-search.scoring :as scoring]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor]
+                   [dk.simongray.drop_in_search.segment Segment])))
 
 (def ^:no-doc fuzzy-weight
   "How much a match with typos weighs before its edits count, as the
@@ -97,31 +100,32 @@
          segments)))
 
 (defn- distinct-docs
-  "The documents of `segment` with a posting in the `ranges`."
-  [^Segment segment ranges]
-  (let [^ints docs (.-docs segment)
-        ^ints seen (segment/make-ints (segment/size segment))]
-    (doseq [[from to] ranges]
-      (loop [k (long from)]
-        (when (< k (long to))
-          (aset seen (aget docs k) 1)
-          (recur (inc k)))))
+  "The documents of `segment` that hold one of the terms numbered `ts`."
+  [segment ts]
+  (let [^ints seen (segment/make-ints (segment/size segment))]
+    (doseq [t ts]
+      (let [^Cursor c (segment/cursor segment t)]
+        (loop []
+          (let [d (.nextDoc c)]
+            (when-not (== d postings/no-more)
+              (aset seen d 1)
+              (recur))))))
     (areduce seen i n 0 (+ n (aget seen i)))))
 
 (defn- segment-doc-count
   "The documents of `segment` with one of `terms` in a field that the
   `weights` count, or in any field when `weights` is nil."
   [segment weights terms]
-  (let [ranges (segment/term-ranges segment terms)]
+  (let [ts (segment/term-numbers segment terms)]
     (cond
       (and weights (not (scoring/every-field? weights)))
-      (hits/hit-count (scoring/range-frequencies segment weights ranges nil))
+      (hits/hit-count (scoring/term-frequencies segment weights ts nil))
 
-      (< 1 (count ranges))
-      (distinct-docs segment ranges)
+      (< 1 (count ts))
+      (distinct-docs segment ts)
 
       :else
-      (segment/postings-count ranges))))
+      (segment/postings-count segment ts))))
 
 (defn- doc-count
   "The documents of the `segments` with one of `terms` in a field that the
@@ -216,15 +220,11 @@
 
 (defn- holds-term?
   "Whether the document `d` of `segment` holds `term`."
-  [^Segment segment term d]
-  (let [^ints docs (.-docs segment)
-        d          (long d)]
-    (boolean
-     (some (fn [[from to]]
-             (let [to (long to)
-                   k  (segment/seek docs (long from) to d)]
-               (and (< k to) (= d (aget docs k)))))
-           (segment/term-ranges segment [term])))))
+  [segment term d]
+  (boolean
+   (some (fn [t]
+           (= (long d) (.advance ^Cursor (segment/cursor segment t) d)))
+         (segment/term-numbers segment [term]))))
 
 (defn ^:no-doc with-typos
   "The `result` of a query of `index` with :typos, a map of each term of

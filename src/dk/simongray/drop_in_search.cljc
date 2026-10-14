@@ -52,8 +52,7 @@
    (let [defaults (dissoc opts :term-fn)]
      (cond-> (-> (index)
                  (indexing/with-term-fn term-fn)
-                 (indexing/added docs)
-                 indexing/compacted)
+                 (indexing/indexed docs))
        (seq defaults) (assoc :defaults defaults)))))
 
 (defn restore

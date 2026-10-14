@@ -9,9 +9,12 @@
     2009, https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf
   - Lucene's BM25Similarity, https://lucene.apache.org/core/9_11_1/core/"
   (:require [dk.simongray.drop-in-search.hits :as hits]
+            [dk.simongray.drop-in-search.postings :as postings
+             #?@(:cljs [:refer [Cursor]])]
             [dk.simongray.drop-in-search.segment :as segment
              #?@(:cljs [:refer [Segment]])])
-  #?(:clj (:import [dk.simongray.drop_in_search.segment Segment])))
+  #?(:clj (:import [dk.simongray.drop_in_search.postings Cursor]
+                   [dk.simongray.drop_in_search.segment Segment])))
 
 ;; k1, b and idf are those of BM25Similarity of Lucene
 (def ^{:no-doc true :const true} k1
@@ -93,82 +96,87 @@
             length         (aget lengths (+ (* d (.-width segment)) no))]
         (/ w (+ (aget a no) (* (aget c no) length)))))))
 
+;; Each occurrence adds what it counts, one by one in the order of the
+;; positions, which a product of the count would round differently
 (defn- frequency
-  "BM25F's frequency of a term in the document `d` of `segment`, whose
-  posting of it is the `k`th, with the `weights` of the fields."
-  ^double [^Segment segment weights ^long d ^long k]
-  (let [^ints pos-start (.-pos-start segment)
-        ^ints positions (.-positions segment)
-        to              (aget pos-start (inc k))]
-    ;; the positions of a field come together, so what an occurrence
-    ;; counts is worked out once for each run of them
-    (loop [i (long (aget pos-start k)) sum 0.0 field -1 counts 0.0]
-      (if (< i to)
-        (let [no     (quot (aget positions i) segment/positions-per-field)
-              counts (if (= no field)
-                       counts
-                       (occurrence segment weights d no))]
-          (recur (inc i) (+ sum counts) no counts))
+  "BM25F's frequency of a term in the document `d` of `segment`, with the
+  `weights` of the fields, from the runs of its posting at the cursor
+  `c`."
+  ^double [segment weights ^long d ^Cursor c]
+  (let [runs (.runs c)]
+    (loop [r -1 left 0 sum 0.0 counts 0.0]
+      (cond
+        (pos? left)
+        (recur r (dec left) (+ sum counts) counts)
+
+        (< (inc r) runs)
+        (let [r (inc r)]
+          (recur r (.freq c r) sum (occurrence segment weights d (.field c r))))
+
+        :else
         sum))))
 
-;; The postings of a term and the candidates are both in order, so they
-;; meet in one walk, each side skipping ahead with seek
 (defn- add-frequencies!
   "Add to `acc`, an array of a value for each of the `candidates`, the
-  BM25F frequency of each posting of `segment` from `from` to `to` whose
-  document is one of them, with the `weights`."
-  [^Segment segment weights ^doubles acc ^ints candidates from to]
-  (let [^ints docs (.-docs segment)
-        n          (alength candidates)
-        to         (long to)]
-    (loop [j 0 k (long from)]
-      (when (and (< j n) (< k to))
-        (let [d (aget candidates j)
-              e (aget docs k)]
-          (cond
-            (< d e) (recur (segment/seek candidates j n e) k)
-            (> d e) (recur j (segment/seek docs k to d))
-            :else   (do (aset acc j (+ (aget acc j)
-                                       (frequency segment weights d k)))
-                        (recur (inc j) (inc k)))))))))
+  BM25F frequency of each posting in `segment` of the term numbered `t`
+  whose document is one of them, with the `weights`."
+  [segment weights ^doubles acc ^ints candidates t]
+  (let [^Cursor c (segment/cursor segment t)]
+    (segment/each-held! c candidates
+                        (fn [j]
+                          (aset acc j (+ (aget acc j)
+                                         (frequency segment weights
+                                                    (aget candidates j) c)))))))
 
 (defn- add-each-frequency!
   "Add to `acc`, an array of a value for each document of `segment`, the
-  BM25F frequency of each posting from `from` to `to`, with the
+  BM25F frequency of each posting of the term numbered `t`, with the
   `weights`."
-  [^Segment segment weights ^doubles acc from to]
-  (let [^ints docs (.-docs segment)
-        to         (long to)]
-    (loop [k (long from)]
-      (when (< k to)
-        (let [d (aget docs k)]
-          (aset acc d (+ (aget acc d) (frequency segment weights d k)))
-          (recur (inc k)))))))
+  [segment weights ^doubles acc t]
+  (let [^Cursor c (segment/cursor segment t)]
+    (loop []
+      (let [d (.nextDoc c)]
+        (when-not (== d postings/no-more)
+          (aset acc d (+ (aget acc d) (frequency segment weights d c)))
+          (recur))))))
 
-(defn ^:no-doc range-frequencies
+(defn- each-frequency
+  "The hits of the documents of `segment` that hold the term numbered `t`
+  in a field that the `weights` count, scored by their BM25F
+  frequencies."
+  [segment weights t]
+  (let [^Cursor c        (segment/cursor segment t)
+        n                (segment/doc-frequency segment t)
+        ^ints docs       (segment/make-ints n)
+        ^doubles scores  (segment/make-doubles n)]
+    (dotimes [k n]
+      (let [d (.nextDoc c)]
+        (aset docs k (int d))
+        (aset scores k (frequency segment weights d c))))
+    (hits/collected scores docs)))
+
+(defn ^:no-doc term-frequencies
   "The hits of the documents of `segment` among the `candidates`, or of
-  all of them when nil, that have postings in the `ranges` in a field
-  that the `weights` count, scored by their BM25F frequencies added up."
-  [^Segment segment weights ranges candidates]
+  all of them when nil, that hold the terms numbered `ts` in a field that
+  the `weights` count, scored by their BM25F frequencies added up."
+  [segment weights ts candidates]
   (cond
-    (empty? ranges)
+    (empty? ts)
     (hits/no-hits)
 
     candidates
     (let [acc (segment/make-doubles (alength ^ints candidates))]
-      (doseq [[from to] ranges]
-        (add-frequencies! segment weights acc candidates from to))
+      (doseq [t ts]
+        (add-frequencies! segment weights acc candidates t))
       (hits/collected acc candidates))
 
-    ;; a term holds each document once, so its documents are candidates
-    (= 1 (count ranges))
-    (let [[from to] (first ranges)]
-      (recur segment weights ranges (segment/slice (.-docs segment) from to)))
+    (= 1 (count ts))
+    (each-frequency segment weights (first ts))
 
     :else
     (let [acc (segment/make-doubles (segment/size segment))]
-      (doseq [[from to] ranges]
-        (add-each-frequency! segment weights acc from to))
+      (doseq [t ts]
+        (add-each-frequency! segment weights acc t))
       (hits/collected acc nil))))
 
 (defn ^:no-doc saturated

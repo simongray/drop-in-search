@@ -98,7 +98,12 @@
   (testing "an index printed as EDN and read back"
     (let [thawed (edn/read-string (pr-str idx))]
       (is (= [1 2] (mapv :id (search/query thawed "cloj")))
-          "its arrays come back as vectors, which a query makes arrays")
+          "its arrays come back as vectors and text, which a query reads")
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (search/restore
+                    (update thawed :segments
+                            (partial mapv #(dissoc % :postings)))))
+          "but not those of an earlier version, without postings")
       (is (= idx (search/restore thawed)))
       (is (= (hash idx) (hash (search/restore thawed))) "and hashes the same")
       (is (= [1 2] (mapv :id (search/query (search/restore thawed) "cloj"))))

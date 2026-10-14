@@ -12,8 +12,13 @@
          :main-opts   ["-m" "cognitect.test-runner"]
          :exec-fn     cognitect.test-runner.api/test}
 
+  ;; clojure -M:bench  (measures an index of a corpus, see dev/)
+  :bench {:extra-paths ["dev"]
+          :jvm-opts    ["-Xmx8g"]
+          :main-opts   ["-m" "dk.simongray.drop-in-search.bench"]}
+
   ;; clojure -M:cljs compile test  (the tests in Node)
-  :cljs {:extra-paths   ["test"]
+  :cljs {:extra-paths   ["test" "dev"]
          :override-deps {org.clojure/clojure {:mvn/version "1.12.5"}}
          :extra-deps    {thheller/shadow-cljs {:mvn/version "3.5.3"}}
          :main-opts     ["-m" "shadow.cljs.devtools.cli"]}

@@ -135,27 +135,42 @@
   (let [last-at (zipmap (map :id docs) (range))]
     (keep-indexed #(when (= %1 (last-at (:id %2))) %2) docs)))
 
+(defn- with-segment
+  "The `index` with a new segment of the documents `docs`, the terms of
+  whose fields `f` maps, if given."
+  [index f docs]
+  (let [entries  (mapv #(update % :fields segment/analyzed-fields f) docs)
+        numbers  (reduce segment/numbered (:fields index) (map :fields entries))
+        segments (:segments index)]
+    (-> (assoc index :fields numbers)
+        (with-segments (conj segments (segment/built numbers entries))
+                       (count segments)))))
+
 ;; A segment is built of at most 4096 documents at once, so that building
 ;; it takes little memory, and merges join the segments
-(defn ^:no-doc added
+(defn- with-segments-of
   "The `index` with the documents `docs`, which replace any of the same
-  ids."
-  [index docs]
+  ids, and `merged`, a function of an index, applied after each segment
+  of them."
+  [index docs merged]
   (when-let [doc (some #(when (nil? (:id %)) %) docs)]
     (throw (ex-info "A document needs an :id" {:document doc})))
   (let [docs (latest docs)
         f    (term-fn index)]
-    (reduce (fn [index chunk]
-              (let [entries  (mapv #(update % :fields segment/analyzed-fields f)
-                                   chunk)
-                    numbers  (reduce segment/numbered
-                                     (:fields index)
-                                     (map :fields entries))
-                    segments (:segments index)]
-                (-> (assoc index :fields numbers)
-                    (with-segments (conj segments
-                                         (segment/built numbers entries))
-                                   (count segments))
-                    balanced)))
+    (reduce #(merged (with-segment %1 f %2))
             (removed index (map :id docs))
             (partition-all 4096 docs))))
+
+(defn ^:no-doc added
+  "The `index` with the documents `docs`, which replace any of the same
+  ids."
+  [index docs]
+  (with-segments-of index docs balanced))
+
+;; The segments of the documents are merged once they're all built, which
+;; copies each document once
+(defn ^:no-doc indexed
+  "The `index` with the documents `docs`, which replace any of the same
+  ids, in one segment."
+  [index docs]
+  (compacted (with-segments-of index docs identity)))
