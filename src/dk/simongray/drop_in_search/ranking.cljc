@@ -69,52 +69,84 @@
     :else
     (reduce #(kept cmp n %1 %2) [] results)))
 
+;; Elasticsearch's field collapsing and the group.limit of Solr's result
+;; grouping keep the best results of each group, in the order of the rest
+(defn- capped
+  "A transducer of results that keeps at most `n` of each group that
+  `group-fn` gives of a result's id, the first ones, as distinct keeps the
+  first of each."
+  [group-fn n]
+  (fn [rf]
+    (let [seen (volatile! {})]
+      (fn
+        ([] (rf))
+        ([acc] (rf acc))
+        ([acc result]
+         (let [group (group-fn (:id result))
+               k     (long (get @seen group 0))]
+           (if (< k (long n))
+             (do (vswap! seen assoc group (inc k))
+                 (rf acc result))
+             acc)))))))
+
+(defn- in-order
+  "The `found` documents best first, as a lazy seq that sorts only the
+  best `m` of them at first, and four times as many each time it's read
+  past those, from the one at `read`."
+  ([found m]
+   (in-order found m 0))
+  ([found m read]
+   (lazy-seq
+    (let [best-m (best better m found)]
+      (concat (subvec best-m read)
+              (when (< (count best-m) (count found))
+                (in-order found (* 4 (long m)) (count best-m))))))))
+
 (defn ^:no-doc top
   "The best `n` of the `found` documents, or all of them for a nil `n`, as
-  the results that `result-fn` makes of each, with the :filter-pred and
-  :rank-fn of `opts`.
+  the results that `result-fn` makes of each, with the :filter-pred,
+  :rank-fn, :group-fn and :max-per-group of `opts`.
 
-  The results have the :total of those found that the filter keeps in
-  their metadata, unless the filter stopped once it had `n`."
-  [found result-fn n {:keys [filter-pred rank-fn] :as opts}]
-  (cond
-    rank-fn
-    (let [kept (->> found
-                    (map result-fn)
-                    (filterv (or filter-pred any?)))]
-      (with-meta (->> kept
-                      (map (fn [r] [(rank-fn r) r]))
-                      (sort-by first)
-                      (map second)
-                      (#(if n (take n %) %))
-                      vec)
-                 {:total (count kept)}))
+  The results have the :total of those found that the filter and the cap
+  of each group keep in their metadata, unless they stopped once they had
+  `n`."
+  [found result-fn n {:keys [filter-pred rank-fn group-fn max-per-group]}]
+  (let [filtered (if filter-pred (filter filter-pred) identity)
+        cap      (when (and group-fn max-per-group)
+                   (capped group-fn max-per-group))
+        page     (fn [kept]
+                   (with-meta (if n (vec (take n kept)) kept)
+                              {:total (count kept)}))]
+    (cond
+      rank-fn
+      (page (->> (into [] (comp (map result-fn) filtered) found)
+                 (map (fn [r] [(rank-fn r) r]))
+                 (sort-by first)
+                 (into [] (comp (map second) (or cap identity)))))
 
-    ;; a filter that costs, e.g. criteria of a library, reads the best
-    ;; first, and more of them only when too few are kept
-    (and filter-pred n)
-    (loop [m (* 2 (max 1 (long n))) read 0 kept []]
-      (let [best-m (best better m found)
-            kept   (into kept
-                         (comp (filter #(filter-pred (result-fn %)))
-                               (take (- (long n) (count kept))))
-                         (subvec best-m read))]
-        (cond
-          (= (count kept) n)
-          (mapv result-fn kept)
+      ;; a filter that costs, e.g. criteria of a library, reads the best
+      ;; first, and more of them only when too few are kept, and so does a
+      ;; cap, whose groups count in order
+      (and n (or filter-pred cap))
+      (let [kept (into []
+                       (comp (map result-fn)
+                             filtered
+                             (or cap identity)
+                             (take n))
+                       (in-order found (* 2 (max 1 (long n)))))]
+        ;; every one was read, and too few kept to stop early
+        (cond-> kept
+          (< (count kept) (long n)) (with-meta {:total (count kept)})))
 
-          ;; every one was read, and too few kept to stop early
-          (>= m (count found))
-          (with-meta (mapv result-fn kept) {:total (count kept)})
+      cap
+      (page (into [] (comp (map result-fn) filtered cap)
+                  (best better nil found)))
 
-          :else
-          (recur (* 4 m) (count best-m) kept))))
-
-    :else
-    (let [kept (if filter-pred
-                 (filterv #(filter-pred (result-fn %)) found)
-                 found)]
-      (with-meta (->> kept
-                      (best better n)
-                      (mapv result-fn))
-                 {:total (count kept)}))))
+      :else
+      (let [kept (if filter-pred
+                   (filterv #(filter-pred (result-fn %)) found)
+                   found)]
+        (with-meta (->> kept
+                        (best better n)
+                        (mapv result-fn))
+                   {:total (count kept)})))))

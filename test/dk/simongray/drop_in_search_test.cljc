@@ -634,3 +634,149 @@
         found #(mapv :id (search/query idx "same" %))]
     (is (= (take 10 (found {})) (found {:limit 10}))
         "a limit keeps the head of the order of numbers and other ids")))
+
+(deftest boosts-and-a-min-match
+  (let [score  #(:score (first (search/query idx %)))
+        twice? #(close? (* 2 (score %1)) (score %2))]
+    (is (twice? {:term "clojure"} {:term "clojure" :boost 2}))
+    (is (twice? {:phrase ["value" "for" "value"]}
+                {:phrase ["value" "for" "value"] :boost 2}))
+    (is (twice? {:or [{:term "rust"} {:term "systems"}]}
+                {:or [{:term "rust"} {:term "systems"}] :boost 2}))
+    (is (= [2 3] (ids {:or [{:term "rust"} {:term "tomatoes"}]})))
+    (is (= [3 2] (ids {:or [{:term "rust"} {:term "tomatoes" :boost 9}]}))))
+  (testing "an :or with a :min-match holds that many of its queries"
+    (let [q {:or [{:term "clojure"} {:term "data"} {:term "rust"}]}]
+      (is (= #{1 2} (set (ids q))))
+      (is (= #{1 2} (set (ids (assoc q :min-match 2)))))
+      (is (= [] (ids (assoc q :min-match 3))))
+      (is (= #{1 2} (set (ids (assoc q :min-match 1)))))
+      (is (= (ids q) (ids (assoc q :min-match 2))) "the same scores")
+      (is (search/matches? idx "Clojure and Rust" (assoc q :min-match 2)))
+      (is (not (search/matches? idx "Clojure" (assoc q :min-match 2)))))))
+
+(def shelf
+  [{:id     [:a 1]
+    :fields {:title "Clojure macros"
+             :notes "Macros in Clojure and Lisp, with syntax quotes."}}
+   {:id     [:a 2]
+    :fields {:title "Clojure transducers"
+             :notes "Transducers compose in Clojure, as reducers do."}}
+   {:id     [:b 1]
+    :fields {:title "A history of Lisp"
+             :notes "Lisp and its macros, from 1958 on."}}
+   {:id     [:b 2]
+    :fields {:title "Scheme" :notes "Scheme is a Lisp with hygienic macros."}}
+   {:id     [:c 1]
+    :fields {:title "Gardening" :notes "Tomatoes, and a history of seeds."}}
+   {:id     [:c 2]
+    :fields {:title "Compost" :notes "Compost for tomatoes and seeds."}}])
+
+(def shelf-idx
+  (search/index shelf {:boosts {:title 3}}))
+
+(defn- alike
+  ([like]
+   (alike like {}))
+  ([like opts]
+   (mapv :id (search/more-like-this shelf-idx like opts))))
+
+(defn- terms-of
+  ([like]
+   (terms-of like {}))
+  ([like opts]
+   (mapv first (:terms (meta (search/more-like-this shelf-idx like opts))))))
+
+(deftest more-like-this
+  (let [macros (first shelf)]
+    (testing "the documents with the terms of one, best first, without it"
+      (is (= [[:a 2] [:b 2] [:b 1] [:c 2] [:c 1]] (alike macros)))
+      (is (= ["clojure" "macros" "in" "with" "lisp" "and"] (terms-of macros)))
+      (is (= [[:a 1] [:a 2] [:b 2] [:b 1] [:c 2] [:c 1]]
+             (alike macros {:include? true})))
+      (is (= 5 (:total (meta (search/more-like-this shelf-idx macros))))))
+    (testing "a text, or several documents"
+      (is (= [[:c 2] [:c 1]] (alike "Seeds for my tomatoes")))
+      (is (every? (set (terms-of [macros (nth shelf 4)]))
+                  ["clojure" "macros" "seeds" "tomatoes"])))
+    (testing "how often and how widely a term occurs"
+      (is (not-any? #{"syntax" "quotes"} (terms-of macros)) "one document's")
+      (is (some #{"syntax"} (terms-of macros {:min-doc-freq 1})))
+      (is (= ["clojure" "macros"] (terms-of macros {:min-term-freq 2}))
+          "a word in the title counts its boost")
+      (is (= [[:a 2] [:b 2] [:b 1]] (alike macros {:max-doc-freq 3})))
+      (is (= (alike macros {:max-doc-freq 3})
+             (alike macros {:max-doc-freq 0.5}))
+          "a share of the documents")
+      (is (= ["clojure" "in"]
+             (terms-of macros {:group-fn first :max-group-freq 0.5}))
+          "the words of more than half the groups are left out")
+      (is (= ["clojure" "macros" "in" "with" "lisp"]
+             (terms-of macros {:group-fn first :max-group-freq 2}))
+          "a number of groups"))
+    (testing "words left out"
+      (is (= ["clojure" "macros" "with" "lisp"]
+             (terms-of macros {:stop-words ["AND" "in"]})))
+      (is (= ["clojure" "macros" "with" "lisp"]
+             (terms-of macros {:min-word-length 4})))
+      (is (= ["in" "with" "lisp" "and"]
+             (terms-of macros {:max-word-length 4})))
+      (is (= ["clojure" "macros"] (terms-of macros {:max-query-terms 2}))))
+    (testing "the weights of documents liked and unliked"
+      (let [weight     (fn [opts]
+                         (->> (search/more-like-this shelf-idx
+                                                     [macros (nth shelf 4)]
+                                                     opts)
+                              meta
+                              :terms
+                              (into {})))
+            even       (weight {})
+            by-macros  (weight {:weight-fn #(if (= [:a 1] (:id %)) 5 1)})]
+        (is (< (get even "clojure") (get by-macros "clojure")))
+        (is (< (get by-macros "seeds") (get even "seeds"))))
+      (let [weight #(->> (search/more-like-this shelf-idx macros %)
+                         meta
+                         :terms
+                         (into {}))]
+        (is (< (get (weight {:unlike (second shelf)}) "clojure")
+               (get (weight {}) "clojure"))
+            "a term of a document unliked weighs less")
+        (is (= (get (weight {:unlike (second shelf)}) "macros")
+               (get (weight {}) "macros"))
+            "one that it lacks weighs the same")
+        (is (not (contains? (weight {:unlike        (second shelf)
+                                     :unlike-weight 10})
+                            "clojure"))
+            "and one that weighs no more is left out")))
+    (testing "the query"
+      (is (= [[:b 2] [:b 1]] (alike macros {:min-match 3})))
+      (is (= [[:b 2] [:b 1]] (alike macros {:min-match 0.5})) "half of 6")
+      (let [scores #(mapv :score (search/more-like-this shelf-idx macros %))]
+        (is (not= (scores {}) (scores {:boost-terms 2}))))
+      (is (= [[:a 2]] (alike macros {:fields #{:title}})))
+      (is (= ["clojure"] (terms-of macros {:fields #{:title}}))))
+    (testing "the options of query"
+      (is (= [[:b 2] [:b 1]] (alike macros {:limit 2 :offset 1})))
+      (is (= [[:a 2] [:b 2] [:c 2]]
+             (alike macros {:group-fn first :max-per-group 1})))
+      (is (= [[:b 2] [:b 1]]
+             (alike macros {:filter-pred #(= :b (first (:id %)))}))))
+    (testing "nothing to look for"
+      (is (= [] (alike {:id :x :fields {:title "Haskell monads"}})))
+      (is (= [] (alike [])))
+      (is (= [] (terms-of "Haskell"))))))
+
+(deftest groups-of-results
+  (let [found #(search/query shelf-idx "macros | clojure"
+                             (merge {:group-fn first :max-per-group 1} %))]
+    (is (= [[:a 1] [:b 2]] (mapv :id (found {}))))
+    (is (= 2 (:total (meta (found {})))) "the total of those kept")
+    (is (= [[:a 1]] (mapv :id (found {:limit 1}))))
+    (is (= [[:a 2] [:b 2]]
+           (mapv :id (found {:rank-fn #(- (second (:id %)))})))
+        "the first of each group in the order of :rank-fn")
+    (is (= [[:a 1] [:a 2] [:b 2] [:b 1]]
+           (mapv :id (found {:max-per-group 2}))))
+    (is (= [[:a 2] [:b 2]]
+           (mapv :id (found {:filter-pred #(not= [:a 1] (:id %))})))
+        "the filter first, then the cap")))

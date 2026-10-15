@@ -122,7 +122,7 @@
       :else
       (segment/postings-count segment ts))))
 
-(defn- doc-count
+(defn ^:no-doc doc-count
   "The documents of the `segments` with one of `terms` in a field that the
   `weights` count, or in any field when `weights` is nil."
   [segments weights terms]
@@ -195,25 +195,29 @@
 
 ;; Xapian treats a phrase as its words where it has no positions, from
 ;; 0.8.4 on, https://trac.xapian.org/ticket/56, and so a phrase is itself
-;; in the fields with positions, and its words in those without
+;; in the fields with positions, and its words in those without. The
+;; query in its place has its boost, once
 (defn- placed-phrase
   "The phrase `leaf` as a query of the fields of `ctx` that it counts: the
   phrase in those with positions, or its words in those without, or
   either."
-  [{:keys [unpositioned] :as ctx} leaf]
-  (let [counted (scoring/counted (leaf-weights ctx leaf))
+  [{:keys [unpositioned] :as ctx} {:keys [boost] :as leaf}]
+  (let [leaf    (dissoc leaf :boost)
+        counted (scoring/counted (leaf-weights ctx leaf))
         without (filterv #(contains? unpositioned %) counted)
         words   #(search.queries/map-leaves (fn [w] (assoc w :only without))
                                             (search.queries/phrase-words leaf))]
-    (cond
-      (empty? without)
-      leaf
+    (cond-> (cond
+              (empty? without)
+              leaf
 
-      (= (count without) (count counted))
-      (words)
+              (= (count without) (count counted))
+              (words)
 
-      :else
-      {:or [(assoc leaf :only (remove (set without) counted)) (words)]})))
+              :else
+              {:or [(assoc leaf :only (remove (set without) counted))
+                    (words)]})
+      boost (assoc :boost boost))))
 
 (defn ^:no-doc prepared
   "The query `node` with what scoring its terms and phrases takes, worked

@@ -120,14 +120,51 @@ the text comes from as `:field`, so that only the words meant for that
 field are marked. To tell whether a text matches a query at all, use
 `search/matches?`.
 
+More like this
+--------------
+
+To find the documents most like another, e.g. related posts to list under
+a post, give the document to `search/more-like-this`:
+
+```clojure
+(def related
+  (search/more-like-this idx (document (first posts))))
+
+(mapv :id related)
+;; => ["borrowing"]
+
+(:terms (meta related))
+;; => [["clojure" 0.8] ["the" 0.6…]]
+```
+
+It looks for the terms that set the document apart, those that it holds
+often and few other documents hold, as Lucene's
+[MoreLikeThis](https://lucene.apache.org/core/9_11_1/queries/org/apache/lucene/queries/mlt/MoreLikeThis.html)
+does. The document itself isn't among the results, and their metadata
+lists the terms, e.g. to show why a result came up. In a larger index,
+leave out words like "the" with `:stop-words`, or with `:max-doc-freq`,
+which leaves out the words of more than a share of the documents.
+
+It also takes a text, or several documents, e.g. the posts that someone
+read last. Those given as `:unlike` count against them, as in the
+[Rocchio algorithm](https://nlp.stanford.edu/IR-book/html/htmledition/the-rocchio71-algorithm-1.html),
+and a `:weight-fn` can make some count for more, e.g. the most recent.
+
+When the documents come in groups, e.g. posts by author, give a
+`:group-fn` that takes a document's id and returns its group. Then
+`:max-group-freq` leaves out the words that most groups use, so that one
+prolific author can't make a word common. In `search/query` too,
+`:max-per-group` caps the results of each group. The docstring of
+`search/more-like-this` lists all its options.
+
 Options
 -------
 
 The functions that build an index or read a query take a map of options
 as their last argument, e.g. `:limit` and `:offset` for a page of
 results. The metadata of the page has the `:total` of the matches, for
-"1 to 10 of 243", unless a `:filter-pred` let the page fill up before
-every match was read.
+"1 to 10 of 243", unless a `:filter-pred` or `:max-per-group` let the
+page fill up before every match was read.
 
 The options of `search/index` are the defaults of every query of that
 index, e.g. the `:boosts` above. All the functions take the same set of

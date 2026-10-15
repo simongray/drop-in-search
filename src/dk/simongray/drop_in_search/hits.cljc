@@ -108,3 +108,53 @@
                              kept))]
     {:docs   (segment/slice docs 0 kept)
      :scores (segment/trimmed-doubles scores kept)}))
+
+(defn ^:no-doc scaled
+  "The `hits` with each score multiplied by `boost`."
+  [hits boost]
+  (let [^doubles hs     (:scores hits)
+        n               (alength hs)
+        boost           (double boost)
+        ^doubles scores (segment/make-doubles n)]
+    (dotimes [i n]
+      (aset scores i (* boost (aget hs i))))
+    (assoc hits :scores scores)))
+
+(defn- counted
+  "The `hits` with a score of 1 for each document."
+  [hits]
+  (let [n               (hit-count hits)
+        ^doubles scores (segment/make-doubles n)]
+    (dotimes [i n]
+      (aset scores i 1.0))
+    (assoc hits :scores scores)))
+
+;; Lucene's BooleanQuery with a minimumNumberShouldMatch: the hits of all
+;; the parts and the number of parts of each document join in the same
+;; order, so the two line up
+(defn ^:no-doc at-least
+  "The hits of the documents in at least `n` of the hits `parts`, with
+  their scores added up."
+  [n parts]
+  (let [{^ints docs :docs ^doubles scores :scores}
+        (reduce (partial joined :+) parts)
+        ^doubles counts (:scores (reduce (partial joined :+)
+                                         (map counted parts)))
+        m               (alength docs)
+        n               (double n)
+        ^ints kept-docs (segment/make-ints m)
+        ^doubles kept   (segment/make-doubles m)
+        k               (loop [i 0 k 0]
+                          (cond
+                            (= i m)
+                            k
+
+                            (<= n (aget counts i))
+                            (do (aset kept-docs k (aget docs i))
+                                (aset kept k (aget scores i))
+                                (recur (inc i) (inc k)))
+
+                            :else
+                            (recur (inc i) k)))]
+    {:docs   (segment/slice kept-docs 0 k)
+     :scores (segment/trimmed-doubles kept k)}))

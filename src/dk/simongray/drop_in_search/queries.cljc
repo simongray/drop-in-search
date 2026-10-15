@@ -47,7 +47,11 @@
   #{:aliases :syntax :operator :prefix? :min-prefix :max-terms :max-depth
     :term-fn :fuzzy :typo-lengths :known-pred :width :field :limit :offset
     :boosts :fields :k1 :b :filter-pred :rank-fn :max-completions
-    :max-expansions :without-positions :max-field-terms})
+    :max-expansions :without-positions :max-field-terms :group-fn
+    :max-per-group :max-query-terms :min-term-freq :min-doc-freq
+    :max-doc-freq :max-group-freq :min-word-length :max-word-length
+    :stop-words :boost-terms :min-match :include? :unlike :unlike-weight
+    :weight-fn})
 
 (defn ^:no-doc checked
   "The `opts` as they are, or a throw when they aren't a map, or hold an
@@ -423,7 +427,9 @@
   :not with a query, of :term with a term, or of :phrase with a vector
   of terms in a row. A term or phrase has :prefix? when its last term is
   a prefix, and :field when it's in that field only. A term has :fuzzy,
-  :auto or a number of edits, when it allows typos.
+  :auto or a number of edits, when it allows typos. Any query can have a
+  :boost, a number to multiply its score by, and an :or a :min-match, the
+  fewest of its queries that a match holds, as in Lucene.
 
   The `opts` are:
 
@@ -800,14 +806,18 @@
 (defn- satisfied?
   "Whether the query `node` holds when `found-pred` tells which of its
   terms and phrases a text has, as a query of an index matches a document:
-  all of :and, any of :or, but none of those under a :not, and nothing for
-  a :not alone."
+  all of :and, any of :or or its :min-match, but none of those under a
+  :not, and nothing for a :not alone."
   [found-pred node]
   (let [k (kind node)]
     (case k
       (:and :or)      (let [[positive negative] (clauses (get node k))
                             holds?              #(satisfied? found-pred %)
-                            all-or-any          ({:and every? :or some} k)]
+                            least               (long (:min-match node 1))
+                            all-or-any          (if (= :and k)
+                                                  every?
+                                                  #(<= least
+                                                       (count (filter %1 %2))))]
                         (boolean (and (seq positive)
                                       (all-or-any holds? positive)
                                       (not-any? holds? negative))))

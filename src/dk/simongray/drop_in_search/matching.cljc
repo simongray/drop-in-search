@@ -64,15 +64,16 @@
 
 (defn- any-of
   "The hits in `segment` among the `candidates` of the documents that
-  match any of the prepared `queries` but those under a :not, with the
-  constants of `ctx`."
-  [ctx segment queries candidates]
+  match any of the prepared `queries` but those under a :not, or at least
+  `min-match` of them when it's given, with the constants of `ctx`."
+  [ctx segment queries min-match candidates]
   (let [[positive negative] (search.queries/clauses queries)]
     (if (seq positive)
-      (->> positive
-           (map #(hits-in ctx segment % candidates))
-           (reduce (partial hits/joined :+))
-           (excluded ctx segment negative))
+      (let [parts (mapv #(hits-in ctx segment % candidates) positive)]
+        (->> (if (and min-match (< 1 (long min-match)))
+               (hits/at-least min-match parts)
+               (reduce (partial hits/joined :+) parts))
+             (excluded ctx segment negative)))
       (hits/no-hits))))
 
 (defn- term-hits
@@ -178,18 +179,21 @@
                            idf
                            k1)))))
 
+;; Lucene's BoostQuery: a query with a :boost scores its matches times it
 (defn- hits-in
   "The hits in `segment` among the `candidates`, a sorted array of the
   numbers of documents, or all of them when nil, of the prepared query
   `node`, with the constants of `ctx`. A query of :not alone matches
   nothing."
   [ctx segment node candidates]
-  (case (search.queries/kind node)
-    :and    (all-of ctx segment (:and node) candidates)
-    :or     (any-of ctx segment (:or node) candidates)
-    :phrase (phrase-hits ctx segment node candidates)
-    :term   (term-hits ctx segment node candidates)
-    (hits/no-hits)))
+  (let [{:keys [boost min-match]} node]
+    (cond-> (case (search.queries/kind node)
+              :and    (all-of ctx segment (:and node) candidates)
+              :or     (any-of ctx segment (:or node) min-match candidates)
+              :phrase (phrase-hits ctx segment node candidates)
+              :term   (term-hits ctx segment node candidates)
+              (hits/no-hits))
+      (and boost (not (== 1 boost))) (hits/scaled boost))))
 
 (defn- results
   "The documents of `segment` that match the prepared query `node`, as

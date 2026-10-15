@@ -18,9 +18,11 @@
      scoring: the BM25F score of a document that matches
      ranking: the order of the results
         hits: the documents that match in a segment, and their scores,
-              as arrays"
+              as arrays
+        like: the terms that set documents apart, for more-like-this"
   (:refer-clojure :exclude [remove])
   (:require [dk.simongray.drop-in-search.indexing :as indexing]
+            [dk.simongray.drop-in-search.like :as like]
             [dk.simongray.drop-in-search.matching :as matching]
             [dk.simongray.drop-in-search.postings :as postings]
             [dk.simongray.drop-in-search.queries :as search.queries]
@@ -192,6 +194,22 @@
      :max-completions (:max-completions opts)
      :max-expansions  (:max-expansions opts)}))
 
+(defn- page-of
+  "The page of the documents `found` by a query, vectors of an id, a score
+  and what is stored, as results with the :limit, :offset and ranking of
+  `opts`, with the :total of them in its metadata when it's known."
+  [found {:keys [limit offset] :or {offset 0} :as opts}]
+  (let [result (fn [[id score stored]]
+                 {:id id :score score :stored stored})
+        ranked (ranking/top found
+                            result
+                            (some-> limit (+ (long offset)))
+                            opts)
+        page   (subvec ranked (min (long offset) (count ranked)))
+        total  (:total (meta ranked))]
+    (cond-> page
+      total (with-meta {:total total}))))
+
 (defn query
   "The documents of `index` that match the query `q`, best first, as maps
   of :id, :score and :stored, with the `opts` below.
@@ -214,6 +232,9 @@
   - :filter-pred, a predicate of a result to keep it
   - :rank-fn, a function of a result to order by, ascending, instead of
     the score
+  - :group-fn, a function of a document's id that gives its group, and
+    :max-per-group, the most results of each group, its best ones, as
+    Elasticsearch's field collapsing keeps them
   - :max-completions and :max-expansions, the most terms that a prefix
     and a word with typos stand for
 
@@ -221,11 +242,11 @@
   ids by hash, so the order is stable on both platforms.
 
   The results have the :total of the documents that match in their
-  metadata, e.g. for \"1 to 10 of 243\", unless a :filter-pred had no need
-  to read them all. When words matched others with typos, the metadata
-  also has :typos, a map of each such word to those it matched, the
-  closest first, and so does each result that holds a word only with
-  typos:
+  metadata, e.g. for \"1 to 10 of 243\", unless a :filter-pred or
+  :max-per-group had no need to read them all. When words matched others
+  with typos, the metadata also has :typos, a map of each such word to
+  those it matched, the closest first, and so does each result that holds
+  a word only with typos:
 
       (meta (query idx \"intervew\"))
       ;; => {:total 2 :typos {\"intervew\" [\"interview\" \"interviews\"]}}"
@@ -233,31 +254,88 @@
    (query index q {}))
   ([index q opts]
    (search.queries/checked opts)
-   (let [index  (restore index)
-         {:keys [limit offset] :or {offset 0} :as opts}
-         (merge default-limits (:defaults index) opts)
-         ctx    (context index opts)
-         node   (some->> (query-opts index opts)
-                         (search.queries/fuzzy-query q)
-                         (terms/prepared ctx))
-         found  (if node
-                  (matching/matched ctx node)
-                  [])
-         typos  (terms/typos-of node)
-         result (fn [[id score stored]]
-                  {:id id :score score :stored stored})
-         ranked (ranking/top found
-                             result
-                             (some-> limit (+ (long offset)))
-                             opts)
-         page   (subvec ranked (min (long offset) (count ranked)))
-         total  (:total (meta ranked))
-         facts  (cond-> {}
-                  total       (assoc :total total)
-                  (seq typos) (assoc :typos (update-vals typos :near)))]
+   (let [index (restore index)
+         opts  (merge default-limits (:defaults index) opts)
+         ctx   (context index opts)
+         node  (some->> (query-opts index opts)
+                        (search.queries/fuzzy-query q)
+                        (terms/prepared ctx))
+         typos (terms/typos-of node)
+         page  (page-of (if node (matching/matched ctx node) []) opts)
+         facts (cond-> (or (meta page) {})
+                 (seq typos) (assoc :typos (update-vals typos :near)))]
      (cond-> page
        (seq typos) (->> (mapv #(terms/with-typos index typos %)))
        (seq facts) (with-meta facts)))))
+
+(defn more-like-this
+  "The documents of `index` most like those of `like`, best first, as
+  query gives them, with the `opts` below.
+
+  The `like` is a document, as add takes it, a text, or a collection of
+  them, e.g. the last few posts that someone read. The query looks for any
+  of the terms that set them apart, as Lucene's MoreLikeThis does, and
+  leaves the documents of `like` out of its results. The metadata of the
+  results has the :terms, pairs of a term and its weight, the best first:
+
+      (meta (more-like-this idx post))
+      ;; => {:total 1 :terms [[\"clojure\" 0.8] [\"the\" 0.6…]]}
+
+  The `opts` are those of query, and these, over the defaults of the
+  index and like/defaults:
+
+  - :max-query-terms, the most terms to look for, 25 by default
+  - :min-term-freq, the fewest times that the documents hold a term, 1 by
+    default, where a term counts the boost of its field each time
+  - :min-doc-freq, the fewest documents of the index that hold a term, 2
+    by default
+  - :max-doc-freq, the most documents that hold a term, or the share of
+    them when below 1, e.g. 0.05 for 5%, to leave out common words
+  - :max-group-freq, the most groups of :group-fn that hold a term, or the
+    share of them when below 1, e.g. 0.5 to leave out the words of more
+    than half the authors of a blog, which one author's many posts can't
+    make common
+  - :min-word-length and :max-word-length, the fewest and most characters
+    of a term
+  - :stop-words, words to leave out
+  - :boost-terms, a number to boost each term by, times its weight over
+    the best one's, which is off by default
+  - :min-match, the fewest of the terms that a result holds, or the share
+    of them when below 1
+  - :include?, true to keep the documents of `like` among the results
+  - :unlike, documents or texts whose terms count against those of
+    `like`, by :unlike-weight, 0.2 by default
+  - :weight-fn, a function of a document of `like` or :unlike that gives
+    how much it weighs, 1 by default, e.g. more for one read recently
+
+  A term's weight in a document is its frequency times its inverse
+  document frequency, and the weights of each document are scaled to a
+  length of 1. Those of the documents of `like` are averaged, less those
+  of :unlike, as in the Rocchio algorithm. The comments of the like
+  namespace say where this departs from Lucene and Elasticsearch."
+  ([index like]
+   (more-like-this index like {}))
+  ([index like opts]
+   (search.queries/checked opts)
+   (let [index (restore index)
+         opts  (merge default-limits (:defaults index) opts)
+         ctx   (assoc (context index opts)
+                      :term-fn (indexing/term-fn index)
+                      :groups  (delay (count (into #{}
+                                                   (map (:group-fn opts))
+                                                   (ids index)))))
+         terms (like/interesting ctx like opts)
+         node  (some->> (like/query-of terms opts)
+                        (terms/prepared ctx))
+         own   (if (:include? opts)
+                 #{}
+                 (into #{} (keep :id) (like/documents like)))
+         found (if node
+                 (into []
+                       (clojure.core/remove #(contains? own (first %)))
+                       (matching/matched ctx node))
+                 [])]
+     (vary-meta (page-of found opts) assoc :terms terms))))
 
 (defn snippet
   "A window of `text` around the words that match the query `q`, read as
