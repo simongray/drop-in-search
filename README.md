@@ -151,9 +151,10 @@ read last. Those given as `:unlike` count against them, as in the
 and a `:weight-fn` can make some count for more, e.g. the most recent.
 
 When the documents come in groups, e.g. posts by author, give a
-`:group-fn` that takes a document's id and returns its group. Then
-`:max-group-freq` leaves out the words that most groups use, so that one
-prolific author can't make a word common. In `search/query` too,
+`:group-fn` that takes a document's id and returns its group. Then the
+words of more than 40% of the groups are left out, or another share as
+`:max-group-freq`, so that one prolific author can't make a word common
+and a common word can still be left out. In `search/query` too,
 `:max-per-group` caps the results of each group. The docstring of
 `search/more-like-this` lists all its options.
 

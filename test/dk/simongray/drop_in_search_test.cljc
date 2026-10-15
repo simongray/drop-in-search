@@ -713,7 +713,11 @@
           "the words of more than half the groups are left out")
       (is (= ["clojure" "macros" "in" "with" "lisp"]
              (terms-of macros {:group-fn first :max-group-freq 2}))
-          "a number of groups"))
+          "a number of groups")
+      (is (= ["clojure" "in"] (terms-of macros {:group-fn first}))
+          "40% of the groups by default")
+      (is (= (terms-of macros)
+             (terms-of macros {:group-fn first :max-group-freq nil}))))
     (testing "words left out"
       (is (= ["clojure" "macros" "with" "lisp"]
              (terms-of macros {:stop-words ["AND" "in"]})))
@@ -758,7 +762,9 @@
     (testing "the options of query"
       (is (= [[:b 2] [:b 1]] (alike macros {:limit 2 :offset 1})))
       (is (= [[:a 2] [:b 2] [:c 2]]
-             (alike macros {:group-fn first :max-per-group 1})))
+             (alike macros {:group-fn       first
+                            :max-per-group  1
+                            :max-group-freq nil})))
       (is (= [[:b 2] [:b 1]]
              (alike macros {:filter-pred #(= :b (first (:id %)))}))))
     (testing "nothing to look for"

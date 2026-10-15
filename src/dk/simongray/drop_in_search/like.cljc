@@ -33,18 +33,27 @@
 ;; 1, so those unliked weigh 0.15 / 0.75. Elasticsearch asks a match to
 ;; hold 30% of the terms, but Lucene asks for none, as here, since two
 ;; rare terms, e.g. a film's year and its star, are often the best link
-;; between short documents
+;; between short documents.
+;;
+;; Neither caps the documents that hold a term by default, and nor does
+;; this, since any share of them leaves a small index without terms. The
+;; groups that hold a term are this library's own cap. In 574 podcasts in
+;; many languages, and in 40 in mostly one, the common words of English
+;; were in 46% to 98% of the shows, and the words of a topic in 5% to 38%
 (def defaults
   "The options of more-like-this, when its options don't set them:
 
   - :max-query-terms, the most terms that the query looks for
   - :min-term-freq, the fewest times that the documents hold a term
   - :min-doc-freq, the fewest documents of the index that hold a term
+  - :max-group-freq, the share of the groups of a :group-fn that hold a
+    term at most
   - :unlike-weight, how much the documents of :unlike weigh against
     those liked"
   {:max-query-terms 25
    :min-term-freq   1
    :min-doc-freq    2
+   :max-group-freq  0.4
    :unlike-weight   0.2})
 
 (defn- document-of
