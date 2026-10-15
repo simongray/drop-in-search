@@ -152,9 +152,9 @@ and a `:weight-fn` can make some count for more, e.g. the most recent.
 
 When the documents come in groups, e.g. posts by author, give a
 `:group-fn` that takes a document's id and returns its group. Then the
-words of more than 40% of the groups are left out, or another share as
-`:max-group-freq`, so that one prolific author can't make a word common
-and a common word can still be left out. In `search/query` too,
+words that more than 40% of the groups use are left out, however many
+posts one author writes, and `:max-group-freq` sets another share. In
+`search/query` too,
 `:max-per-group` caps the results of each group. The docstring of
 `search/more-like-this` lists all its options.
 

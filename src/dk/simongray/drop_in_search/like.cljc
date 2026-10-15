@@ -135,6 +135,17 @@
     (* (double x) (long total))
     x))
 
+;; A share caps the documents or groups that hold a term at 2 or more,
+;; since a term of one alone links it to nothing, and a share of a few,
+;; e.g. 40% of 3 shows, would leave out every term that links two
+(defn- cap-of
+  "The most documents or groups of `total` that may hold a term, `x`, or
+  the share `x` of them when `x` is below 1, but at least 2."
+  [x total]
+  (if (< x 1)
+    (max 2.0 (* (double x) (long total)))
+    x))
+
 ;; The groups are counted until there are more than `most`, so that a
 ;; common term costs only the postings that it takes to tell
 (defn- group-count
@@ -214,7 +225,7 @@
         untfs     (map #(frequencies-of ctx opts %) unliked)
         summed    (apply merge-with + {} tfs)
         noise?    (noise-pred ctx opts)
-        most-docs (some-> max-doc-freq (of-total total))
+        most-docs (some-> max-doc-freq (cap-of total))
         idfs      (into {}
                         (keep (fn [t]
                                 (let [d (terms/doc-count segments weights [t])]
@@ -234,7 +245,7 @@
         liking    (centroid (map vector-of tfs) (map weight-fn liked))
         unliking  (centroid (map vector-of untfs) (map weight-fn unliked))
         most      (when (and group-fn max-group-freq)
-                    (long (of-total max-group-freq @groups)))
+                    (long (cap-of max-group-freq @groups)))
         common?   #(and most (< most (group-count segments group-fn most %)))]
     (->> liking
          (keep (fn [[t w]]

@@ -294,7 +294,8 @@
   - :max-group-freq, the most groups of :group-fn that hold a term, or the
     share of them when below 1, 0.4 by default, which leaves out the words
     of more than 40% of the authors of a blog, e.g., however many posts
-    one author writes, and nil for no cap
+    one author writes, and nil for no cap. A share is never fewer than 2
+    documents or groups, since a term of one links it to nothing.
   - :min-word-length and :max-word-length, the fewest and most characters
     of a term
   - :stop-words, words to leave out

@@ -709,13 +709,16 @@
              (alike macros {:max-doc-freq 0.5}))
           "a share of the documents")
       (is (= ["clojure" "in"]
-             (terms-of macros {:group-fn first :max-group-freq 0.5}))
-          "the words of more than half the groups are left out")
-      (is (= ["clojure" "macros" "in" "with" "lisp"]
-             (terms-of macros {:group-fn first :max-group-freq 2}))
+             (terms-of macros {:group-fn first :max-group-freq 1}))
           "a number of groups")
-      (is (= ["clojure" "in"] (terms-of macros {:group-fn first}))
-          "40% of the groups by default")
+      (is (= ["clojure" "macros" "in" "with" "lisp"]
+             (terms-of macros {:group-fn first}))
+          "40% of the groups by default, and the term of all three is left out")
+      (is (= (terms-of macros {:group-fn first})
+             (terms-of macros {:group-fn first :max-group-freq 0.1}))
+          "a share is never fewer than 2 groups, which a term can link")
+      (is (= (alike macros {:max-doc-freq 2})
+             (alike macros {:max-doc-freq 0.1})))
       (is (= (terms-of macros)
              (terms-of macros {:group-fn first :max-group-freq nil}))))
     (testing "words left out"
