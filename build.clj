@@ -30,7 +30,7 @@
 
 (def version
   "The version to build; bump it with each release on GitHub."
-  "0.4.0")
+  "0.4.1")
 
 (def class-dir
   "Where the jar's contents are staged."
