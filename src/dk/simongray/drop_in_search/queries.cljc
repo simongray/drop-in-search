@@ -51,7 +51,7 @@
     :max-per-group :max-query-terms :min-term-freq :min-doc-freq
     :max-doc-freq :max-group-freq :min-word-length :max-word-length
     :stop-words :boost-terms :min-match :include? :unlike :unlike-weight
-    :weight-fn})
+    :weight-fn :same-group?})
 
 (defn ^:no-doc checked
   "The `opts` as they are, or a throw when they aren't a map, or hold an

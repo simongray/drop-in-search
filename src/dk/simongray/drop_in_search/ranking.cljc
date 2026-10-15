@@ -1,6 +1,7 @@
 (ns dk.simongray.drop-in-search.ranking
   "The best results of a query: the highest scores first, and equal scores
-  by id, unless a function of a result ranks them.")
+  by id, unless a function of a result ranks them."
+  (:require [dk.simongray.drop-in-search.segment :as segment]))
 
 ;; Numbers come first, and other ids compare by hash and then as strings,
 ;; so that the order is total and the same on both platforms, which hash
@@ -89,18 +90,43 @@
                  (rf acc result))
              acc)))))))
 
+(defn- sorted-scores
+  "The scores of the `found` documents, an array of doubles in ascending
+  order."
+  [found]
+  (let [^doubles scores (segment/make-doubles (count found))]
+    (dotimes [i (count found)]
+      (aset scores i (double (nth (nth found i) 1))))
+    #?(:clj (java.util.Arrays/sort scores) :cljs (.sort scores))
+    scores))
+
+;; Past the few that best keeps in a small vector, the best m are those of
+;; at least the score of the mth, which a sort of the scores alone tells,
+;; so that only they are sorted, and not every document found
 (defn- in-order
   "The `found` documents best first, as a lazy seq that sorts only the
   best `m` of them at first, and four times as many each time it's read
-  past those, from the one at `read`."
+  past those, from the one at `read`, with the `scores` of them all, a
+  delay of sorted-scores."
   ([found m]
-   (in-order found m 0))
-  ([found m read]
+   (in-order found m 0 (delay (sorted-scores found))))
+  ([found m read scores]
    (lazy-seq
-    (let [best-m (best better m found)]
-      (concat (subvec best-m read)
-              (when (< (count best-m) (count found))
-                (in-order found (* 4 (long m)) (count best-m))))))))
+    (let [n      (count found)
+          best-m (cond
+                   (< m (Math/sqrt n))
+                   (best better m found)
+
+                   (< m n)
+                   (let [least (aget ^doubles @scores (- n (long m)))]
+                     (best better nil (filterv #(<= least (double (nth % 1)))
+                                               found)))
+
+                   :else
+                   (best better nil found))]
+      (concat (subvec best-m (min read (count best-m)))
+              (when (< (count best-m) n)
+                (in-order found (* 4 (long m)) (count best-m) scores)))))))
 
 (defn ^:no-doc top
   "The best `n` of the `found` documents, or all of them for a nil `n`, as

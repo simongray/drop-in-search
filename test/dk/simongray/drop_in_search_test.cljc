@@ -5,6 +5,7 @@
             [clojure.test :refer [deftest is testing]]
             [dk.simongray.drop-in-search :as search]
             [dk.simongray.drop-in-search.ciff :as ciff]
+            [dk.simongray.drop-in-search.like :as like]
             [dk.simongray.drop-in-search.queries :as queries]))
 
 (def docs
@@ -762,6 +763,29 @@
         (is (not= (scores {}) (scores {:boost-terms 2}))))
       (is (= [[:a 2]] (alike macros {:fields #{:title}})))
       (is (= ["clojure"] (terms-of macros {:fields #{:title}}))))
+    (testing "the groups of an index, counted once for each"
+      (let [count-of #(like/counted-groups (:segments (search/restore %))
+                                           first)
+            more     (search/add shelf-idx
+                                 {:id [:d 1] :fields {:title "Lisp machines"}})]
+        (is (= 3 (count-of shelf-idx) (count-of shelf-idx)))
+        (is (= 4 (count-of more)) "and again for an index of new documents")
+        (is (= 2 (count-of (search/remove shelf-idx [:c 1] [:c 2])))
+            "but those removed")))
+    (testing "the documents of other groups, without the terms of its own"
+      (is (= [[:b 2] [:b 1] [:c 2] [:c 1]]
+             (alike macros {:group-fn       first
+                            :same-group?    false
+                            :max-group-freq nil})))
+      (is (= ["macros" "with" "lisp" "and"]
+             (terms-of macros {:group-fn       first
+                               :same-group?    false
+                               :max-group-freq nil}))
+          "clojure and in are of the group of macros alone")
+      (is (= (alike macros {:group-fn first :max-group-freq nil})
+             (alike macros {:group-fn       first
+                            :same-group?    true
+                            :max-group-freq nil}))))
     (testing "the options of query"
       (is (= [[:b 2] [:b 1]] (alike macros {:limit 2 :offset 1})))
       (is (= [[:a 2] [:b 2] [:c 2]]

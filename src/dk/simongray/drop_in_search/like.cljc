@@ -147,7 +147,9 @@
     x))
 
 ;; The groups are counted until there are more than `most`, so that a
-;; common term costs only the postings that it takes to tell
+;; common term costs only the postings that it takes to tell. Documents of
+;; a group often come one after another, e.g. the episodes of a show added
+;; at once, so a group is looked up only when it changes
 (defn- group-count
   "The groups that `group-fn` gives of the ids of the documents of the
   `segments` that hold `term`, counted up to one more than `most`."
@@ -159,9 +161,8 @@
                  seen
                  (let [^Cursor c (segment/cursor segment t)
                        ids       (.-ids segment)
-                       deleted   (.-deleted segment)
-                       group-of  #(group-fn (nth ids %))]
-                   (loop [seen seen]
+                       deleted   (.-deleted segment)]
+                   (loop [seen seen last ::none]
                      (let [d (.nextDoc c)]
                        (cond
                          (< most (count seen))
@@ -171,12 +172,93 @@
                          seen
 
                          (contains? deleted d)
-                         (recur seen)
+                         (recur seen last)
 
                          :else
-                         (recur (conj seen (group-of d))))))))))
+                         (let [group (group-fn (nth ids d))]
+                           (if (= group last)
+                             (recur seen last)
+                             (recur (conj seen group) group))))))))))
            #{}
            segments)))
+
+(defn- held-only-by?
+  "Whether every document of the `segments` that holds `term` is of one of
+  the `groups` that `group-fn` gives of its id, which the first that isn't
+  tells."
+  [segments group-fn groups term]
+  (every? (fn [^Segment segment]
+            (let [t (segment/term-number segment term)]
+              (or (neg? t)
+                  (let [^Cursor c (segment/cursor segment t)
+                        ids       (.-ids segment)
+                        deleted   (.-deleted segment)]
+                    (loop []
+                      (let [d (.nextDoc c)]
+                        (cond
+                          (== d postings/no-more)
+                          true
+
+                          (or (contains? deleted d)
+                              (contains? groups (group-fn (nth ids d))))
+                          (recur)
+
+                          :else
+                          false)))))))
+          segments))
+
+(defn ^:no-doc own-groups
+  "The groups that `group-fn` gives of the ids of the documents of `like`
+  that have one, which more-like-this leaves out without :same-group?."
+  [like group-fn]
+  (into #{} (comp (keep :id) (map group-fn)) (documents like)))
+
+(def ^:no-doc group-totals
+  "The number of groups of the segments of an index by the last function
+  that counted them, as a pair, kept as long as the segments are."
+  #?(:clj  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.))
+     :cljs (js/WeakMap.)))
+
+(declare group-total)
+
+;; Counting the groups reads every id of an index, so the count is kept
+;; with its segments, which change whenever the documents do
+(defn ^:no-doc counted-groups
+  "The number of groups that `group-fn` gives of the ids of the documents
+  of the `segments`, as group-total counts them, once for each."
+  [segments group-fn]
+  (let [[f n] (.get group-totals segments)]
+    (if (identical? f group-fn)
+      n
+      (let [n (group-total segments group-fn)]
+        (#?(:clj .put :cljs .set) group-totals segments [group-fn n])
+        n))))
+
+(defn ^:no-doc group-total
+  "The number of groups that `group-fn` gives of the ids of the documents
+  of the `segments`, but those removed."
+  [segments group-fn]
+  (count
+   (persistent!
+    (reduce (fn [seen ^Segment segment]
+              (let [ids     (.-ids segment)
+                    deleted (.-deleted segment)
+                    n       (count ids)]
+                (loop [d 0 seen seen last ::none]
+                  (cond
+                    (== d n)
+                    seen
+
+                    (contains? deleted d)
+                    (recur (inc d) seen last)
+
+                    :else
+                    (let [group (group-fn (nth ids d))]
+                      (if (= group last)
+                        (recur (inc d) seen last)
+                        (recur (inc d) (conj! seen group) group)))))))
+            (transient #{})
+            segments))))
 
 ;; Manning et al. take the vectors of length-normalized documents, so that
 ;; each document counts the same, however long. The squares are added up
@@ -215,9 +297,11 @@
   and its weight, the best first."
   [{:keys [segments total weights groups] :as ctx}
    like
-   {:keys [unlike weight-fn group-fn] :as opts}]
+   {:keys [unlike weight-fn group-fn same-group?] :as opts}]
   (let [{:keys [max-query-terms min-term-freq min-doc-freq max-doc-freq
                 max-group-freq unlike-weight]} (merge defaults opts)
+        own       (when (and group-fn (false? same-group?))
+                    (not-empty (own-groups like group-fn)))
         weight-fn (or weight-fn (constantly 1))
         liked     (documents like)
         unliked   (documents unlike)
@@ -226,27 +310,31 @@
         summed    (apply merge-with + {} tfs)
         noise?    (noise-pred ctx opts)
         most-docs (some-> max-doc-freq (cap-of total))
-        idfs      (into {}
+        dfs       (into {}
                         (keep (fn [t]
                                 (let [d (terms/doc-count segments weights [t])]
                                   (when (and (<= (long min-doc-freq) d)
                                              (or (nil? most-docs)
                                                  (<= d most-docs)))
-                                    [t (scoring/idf total d)]))))
+                                    [t d]))))
                         (into #{}
                               (comp (mapcat keys) (remove noise?))
                               (concat tfs untfs)))
         vector-of (fn [tf]
                     (normalized (into {}
                                       (keep (fn [[t f]]
-                                              (when-let [idf (idfs t)]
-                                                [t (* (double f) idf)])))
+                                              (when-let [d (dfs t)]
+                                                [t (* (double f)
+                                                      (scoring/idf total d))])))
                                       tf)))
         liking    (centroid (map vector-of tfs) (map weight-fn liked))
         unliking  (centroid (map vector-of untfs) (map weight-fn unliked))
         most      (when (and group-fn max-group-freq)
                     (long (cap-of max-group-freq @groups)))
-        common?   #(and most (< most (group-count segments group-fn most %)))]
+        ;; a term of no more documents than the cap is of no more groups
+        common?   #(and most
+                        (< most (long (dfs %)))
+                        (< most (group-count segments group-fn most %)))]
     (->> liking
          (keep (fn [[t w]]
                  (let [w (- (double w)
@@ -259,8 +347,12 @@
          ;; platforms
          (sort-by (fn [[t w]] [(- (double w)) t]))
          ;; a term that too many groups hold is counted only when it's
-         ;; among the best that are left, since that costs its postings
+         ;; among the best that are left, since that costs its postings, and
+         ;; so is one that only the groups of `like` hold, which finds
+         ;; nothing when the results leave those out, e.g. a show's name
          (into [] (comp (remove (comp common? first))
+                        (remove #(and own (held-only-by? segments group-fn own
+                                                         (first %))))
                         (take max-query-terms))))))
 
 ;; Lucene's createQuery: a clause that a match may hold for each term,

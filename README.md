@@ -153,10 +153,12 @@ and a `:weight-fn` can make some count for more, e.g. the most recent.
 When the documents come in groups, e.g. posts by author, give a
 `:group-fn` that takes a document's id and returns its group. Then the
 words that more than 40% of the groups use are left out, however many
-posts one author writes, and `:max-group-freq` sets another share. In
-`search/query` too,
-`:max-per-group` caps the results of each group. The docstring of
-`search/more-like-this` lists all its options.
+posts one author writes, and `:max-group-freq` sets another share. With
+`:same-group? false`, the results are only of other authors, and the
+words that only the author of the document uses are left out, since
+they would find nothing. In `search/query` too, `:max-per-group` caps
+the results of each group. The docstring of `search/more-like-this`
+lists all its options.
 
 Options
 -------

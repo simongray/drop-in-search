@@ -304,6 +304,9 @@
   - :min-match, the fewest of the terms that a result holds, or the share
     of them when below 1
   - :include?, true to keep the documents of `like` among the results
+  - :same-group?, false to leave out the documents of the groups of
+    `like`, e.g. the other posts of its author, and the terms that only
+    those groups hold, which would find nothing else
   - :unlike, documents or texts whose terms count against those of
     `like`, by :unlike-weight, 0.2 by default
   - :weight-fn, a function of a document of `like` or :unlike that gives
@@ -318,24 +321,30 @@
    (more-like-this index like {}))
   ([index like opts]
    (search.queries/checked opts)
-   (let [index (restore index)
-         opts  (merge default-limits (:defaults index) opts)
-         ctx   (assoc (context index opts)
-                      :term-fn (indexing/term-fn index)
-                      :groups  (delay (count (into #{}
-                                                   (map (:group-fn opts))
-                                                   (ids index)))))
-         terms (like/interesting ctx like opts)
-         node  (some->> (like/query-of terms opts)
-                        (terms/prepared ctx))
-         own   (if (:include? opts)
-                 #{}
-                 (into #{} (keep :id) (like/documents like)))
-         found (if node
-                 (into []
-                       (clojure.core/remove #(contains? own (first %)))
-                       (matching/matched ctx node))
-                 [])]
+   (let [index   (restore index)
+         {:keys [group-fn same-group?] :as opts}
+         (merge default-limits (:defaults index) opts)
+         ctx     (assoc (context index opts)
+                        :term-fn (indexing/term-fn index)
+                        :groups  (delay (like/counted-groups
+                                         (:segments index)
+                                         group-fn)))
+         terms   (like/interesting ctx like opts)
+         node    (some->> (like/query-of terms opts)
+                          (terms/prepared ctx))
+         own     (if (:include? opts)
+                   #{}
+                   (into #{} (keep :id) (like/documents like)))
+         ;; the documents of the own groups go before the ranking, which
+         ;; would otherwise read past the many that share their words
+         groups  (when (and group-fn (false? same-group?))
+                   (like/own-groups like group-fn))
+         others? (fn [[id]]
+                   (not (or (contains? own id)
+                            (and groups (contains? groups (group-fn id))))))
+         found   (if node
+                   (into [] (filter others?) (matching/matched ctx node))
+                   [])]
      (vary-meta (page-of found opts) assoc :terms terms))))
 
 (defn snippet
